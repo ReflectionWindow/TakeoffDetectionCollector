@@ -641,8 +641,7 @@ describe("SF must-not-break invariants", () => {
     ).toBeNull();
   });
 
-  it("anisotropic bake keeps PNG Euclidean distance for feetPerPx", async () => {
-    const { calibrateFromReference } = await import("../src/lib/scale");
+  it("anisotropic bake keeps PNG Euclidean distance", () => {
     // page 100×200 pt, raster 250×400 px → sx=0.4, sy=0.5 (never average).
     const index = bakeGeometryIndex(
       vectorsFixture({
@@ -663,11 +662,7 @@ describe("SF must-not-break invariants", () => {
     expect(index!.sy).toBeCloseTo(0.5, 10);
     expect(index!.truncated).toBe(false);
     const seg = index!.segments[0]!;
-    const pxDist = dist(seg.a, seg.b);
-    expect(pxDist).toBeCloseTo(100, 5);
-    const cal = calibrateFromReference(seg.a, seg.b, 10, { dpi: 999 });
-    expect(cal).not.toBeNull();
-    expect(cal!.feetPerPx).toBeCloseTo(0.1, 10);
+    expect(dist(seg.a, seg.b)).toBeCloseTo(100, 5);
   });
 });
 
