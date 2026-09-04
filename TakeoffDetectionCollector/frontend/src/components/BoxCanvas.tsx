@@ -307,18 +307,56 @@ export default function BoxCanvas({
               strokeWidth={2 / zoom}
             />
           ))}
-          {boxes.map((b) => (
-            <rect
-              key={b.box_id}
-              x={b.x1}
-              y={b.y1}
-              width={b.x2 - b.x1}
-              height={b.y2 - b.y1}
-              fill="none"
-              stroke={classColor(b.class_name ?? "")}
-              strokeWidth={(selectedId === b.box_id ? 3 : 2) / zoom}
-            />
-          ))}
+          {boxes.map((b) => {
+            const color = classColor(b.class_name ?? "");
+            const selected = selectedId === b.box_id;
+            const name = b.class_name ?? "";
+            const wPx = (b.x2 - b.x1) * zoom;
+            // Keep the sheet readable: only tag boxes that are large enough on
+            // screen, but always tag the selected one.
+            const showTag = name.length > 0 && (selected || wPx > 26);
+            const fs = 11 / zoom;
+            const padX = 5 / zoom;
+            const tagW = name.length * fs * 0.62 + padX * 2;
+            const tagH = fs + 6 / zoom;
+            const tagY = b.y1 - tagH - 2 / zoom;
+            return (
+              <g key={b.box_id}>
+                <rect
+                  x={b.x1}
+                  y={b.y1}
+                  width={b.x2 - b.x1}
+                  height={b.y2 - b.y1}
+                  fill={selected ? `${color}22` : "none"}
+                  stroke={color}
+                  strokeWidth={(selected ? 3 : 2) / zoom}
+                  rx={3 / zoom}
+                />
+                {showTag ? (
+                  <g>
+                    <rect
+                      x={b.x1}
+                      y={tagY}
+                      width={tagW}
+                      height={tagH}
+                      rx={4 / zoom}
+                      fill={color}
+                      opacity={selected ? 1 : 0.92}
+                    />
+                    <text
+                      className="box-label"
+                      x={b.x1 + padX}
+                      y={tagY + tagH - 4.5 / zoom}
+                      fontSize={fs}
+                      fill="#fff"
+                    >
+                      {name}
+                    </text>
+                  </g>
+                ) : null}
+              </g>
+            );
+          })}
           {draft ? (
             <rect
               x={Math.min(draft.x1, draft.x2)}

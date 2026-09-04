@@ -15,7 +15,7 @@ import {
   revertAnnotations,
   saveAnnotations,
 } from "../lib/api";
-import { CLASSES, classById } from "../lib/classes";
+import { CLASSES, classById, classColor } from "../lib/classes";
 import { ptToDisplay } from "../lib/coords";
 import type { BlackoutRegion } from "../lib/pageBlackouts";
 import { loadPdfData, renderPageToCanvas } from "../lib/pdf";
@@ -274,6 +274,9 @@ export default function CleanPage() {
     );
   }
 
+  const selectedBox = boxes.find((b) => b.box_id === selectedId) ?? null;
+  const selectedClass = selectedBox?.class_name ?? null;
+
   return (
     <div className="app-shell clean">
       <header className="topbar">
@@ -290,6 +293,7 @@ export default function CleanPage() {
             </option>
           ))}
         </select>
+        <span className="spacer" />
         <button type="button" className="btn-primary" onClick={() => void onSave()}>
           Save version
         </button>
@@ -299,34 +303,56 @@ export default function CleanPage() {
       </header>
       <div className="clean-body">
         <aside className="rail">
-          <h3>Tools</h3>
-          <button type="button" className={tool === "select" ? "active" : ""} onClick={() => setTool("select")}>
-            Select (S)
-          </button>
-          <button type="button" className={tool === "draw" ? "active" : ""} onClick={() => setTool("draw")}>
-            Draw (R)
-          </button>
-          <button type="button" className={tool === "blackout" ? "active" : ""} onClick={() => setTool("blackout")}>
-            Blackout (B)
-          </button>
-          <button type="button" onClick={snapAll}>
-            Snap all
-          </button>
-          <button type="button" onClick={deleteSelected}>
-            Delete
-          </button>
-          <h3>Class</h3>
-          {CLASSES.map((c) => (
-            <button
-              key={c.name}
-              type="button"
-              className={klass === c.name ? "active" : ""}
-              style={{ borderLeft: `4px solid ${c.color}` }}
-              onClick={() => reclass(c.name)}
-            >
-              {c.name}
+          <h3>Tool</h3>
+          <div className="seg">
+            <button type="button" className={tool === "select" ? "active" : ""} onClick={() => setTool("select")}>
+              Select
             </button>
-          ))}
+            <button type="button" className={tool === "draw" ? "active" : ""} onClick={() => setTool("draw")}>
+              Draw
+            </button>
+            <button type="button" className={tool === "blackout" ? "active" : ""} onClick={() => setTool("blackout")}>
+              Blackout
+            </button>
+          </div>
+          <div className="rail-actions">
+            <button type="button" onClick={snapAll}>
+              Snap all
+            </button>
+            <button type="button" onClick={deleteSelected} disabled={!selectedId}>
+              Delete
+            </button>
+          </div>
+
+          <h3>Class label</h3>
+          {selectedBox ? (
+            <div className="selected-info">
+              <span className="swatch" style={{ background: classColor(selectedClass ?? "") }} />
+              <span>
+                Selected box · <strong>{selectedClass}</strong>
+              </span>
+            </div>
+          ) : (
+            <div className="selected-info none">
+              Pick a class to draw with, or select a box to relabel it.
+            </div>
+          )}
+          <div className="class-grid">
+            {CLASSES.map((c, i) => (
+              <button
+                key={c.name}
+                type="button"
+                className={`class-chip${(selectedClass ?? klass) === c.name ? " active" : ""}`}
+                onClick={() => reclass(c.name)}
+                title={`Assign ${c.name}${i < 9 ? ` (key ${i + 1})` : ""}`}
+              >
+                <span className="swatch" style={{ background: c.color }} />
+                <span className="cname">{c.name}</span>
+                {i < 9 ? <span className="kbd">{i + 1}</span> : null}
+              </button>
+            ))}
+          </div>
+
           <h3>PDF</h3>
           <label className="btn-ghost file-btn">
             {job.has_pdf ? "Replace PDF" : "Attach vector PDF"}

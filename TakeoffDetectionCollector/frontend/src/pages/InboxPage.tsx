@@ -56,6 +56,7 @@ export default function InboxPage() {
       <header className="topbar">
         <strong>Collector</strong>
         <span className="muted">{email}</span>
+        <span className="spacer" />
         <button
           type="button"
           className="btn-ghost"
@@ -114,7 +115,9 @@ export default function InboxPage() {
                   <td>
                     <Link to={`/jobs/${job.id}`}>{job.slug}</Link>
                   </td>
-                  <td>{job.status}</td>
+                  <td>
+                    <span className={`pill ${job.status}`}>{job.status.replace("_", " ")}</span>
+                  </td>
                   <td>{job.page_count}</td>
                   <td>{job.box_count}</td>
                   <td>{job.has_pdf ? "yes" : "awaiting"}</td>
