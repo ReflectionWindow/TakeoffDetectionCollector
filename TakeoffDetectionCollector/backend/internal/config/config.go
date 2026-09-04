@@ -4,6 +4,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Config struct {
@@ -17,6 +18,14 @@ type Config struct {
 	SupabaseDBURL       string
 	DataDir             string
 	DevAuth             bool
+
+	// Database pool tuning. Every job/page/revision row flows through this
+	// pool, so connections are held open for the process lifetime.
+	DBMaxOpenConns    int
+	DBMaxIdleConns    int
+	DBConnMaxLifetime time.Duration
+	DBConnMaxIdleTime time.Duration
+	DBKeepAlive       time.Duration
 }
 
 func Load() Config {
@@ -34,6 +43,12 @@ func Load() Config {
 		SupabaseDBURL:       db,
 		DataDir:             env("DATA_DIR", "./data"),
 		DevAuth:             jwt == "",
+
+		DBMaxOpenConns:    IntEnv("DB_MAX_OPEN_CONNS", 16),
+		DBMaxIdleConns:    IntEnv("DB_MAX_IDLE_CONNS", 8),
+		DBConnMaxLifetime: DurationEnv("DB_CONN_MAX_LIFETIME", time.Hour),
+		DBConnMaxIdleTime: DurationEnv("DB_CONN_MAX_IDLE_TIME", 30*time.Minute),
+		DBKeepAlive:       DurationEnv("DB_KEEPALIVE", time.Minute),
 	}
 }
 
@@ -66,4 +81,20 @@ func IntEnv(key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+// DurationEnv reads a Go duration string (e.g. "1h", "30m", "500ms"). A bare
+// integer is treated as seconds for convenience.
+func DurationEnv(key string, fallback time.Duration) time.Duration {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	if d, err := time.ParseDuration(v); err == nil {
+		return d
+	}
+	if n, err := strconv.Atoi(v); err == nil {
+		return time.Duration(n) * time.Second
+	}
+	return fallback
 }

@@ -32,28 +32,28 @@ type Job struct {
 }
 
 type Page struct {
-	JobID      string   `json:"job_id"`
-	PageIndex  int      `json:"page_index"`
-	PDFPage    int      `json:"pdf_page"`
-	WidthPx75  int      `json:"width_px75"`
-	HeightPx75 int      `json:"height_px75"`
-	WidthPt    float64  `json:"width_pt"`
-	HeightPt   float64  `json:"height_pt"`
-	RasterDPI  int      `json:"raster_dpi"`
-	ImageKey   string   `json:"image_key,omitempty"`
-	VectorsKey string   `json:"vectors_key,omitempty"`
-	PDFKey     string   `json:"pdf_key,omitempty"`
+	JobID      string  `json:"job_id"`
+	PageIndex  int     `json:"page_index"`
+	PDFPage    int     `json:"pdf_page"`
+	WidthPx75  int     `json:"width_px75"`
+	HeightPx75 int     `json:"height_px75"`
+	WidthPt    float64 `json:"width_pt"`
+	HeightPt   float64 `json:"height_pt"`
+	RasterDPI  int     `json:"raster_dpi"`
+	ImageKey   string  `json:"image_key,omitempty"`
+	VectorsKey string  `json:"vectors_key,omitempty"`
+	PDFKey     string  `json:"pdf_key,omitempty"`
 }
 
 type Box struct {
-	ID        string     `json:"id"`
-	Class     string     `json:"class"`
-	Origin    string     `json:"origin"` // imported | user
-	BBoxPt    [4]float64 `json:"bbox_pt"`
-	BBoxPx75  [4]float64 `json:"bbox_px75"`
-	Edited    bool       `json:"edited"`
-	CocoID    int        `json:"coco_id,omitempty"`
-	Category  int        `json:"category_id,omitempty"`
+	ID       string     `json:"id"`
+	Class    string     `json:"class"`
+	Origin   string     `json:"origin"` // imported | user
+	BBoxPt   [4]float64 `json:"bbox_pt"`
+	BBoxPx75 [4]float64 `json:"bbox_px75"`
+	Edited   bool       `json:"edited"`
+	CocoID   int        `json:"coco_id,omitempty"`
+	Category int        `json:"category_id,omitempty"`
 }
 
 type AnnotationPayload struct {
@@ -75,6 +75,8 @@ type Revision struct {
 }
 
 type Store interface {
+	EnsureUser(ctx context.Context, id, email, name string) error
+
 	UpsertJob(ctx context.Context, job Job) (Job, error)
 	GetJob(ctx context.Context, id string) (Job, error)
 	GetJobBySlug(ctx context.Context, slug string) (Job, error)

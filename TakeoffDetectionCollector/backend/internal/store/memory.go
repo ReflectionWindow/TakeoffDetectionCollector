@@ -10,14 +10,14 @@ import (
 )
 
 type Memory struct {
-	mu         sync.RWMutex
-	jobs       map[string]Job
-	bySlug     map[string]string
-	pages      map[string]Page
-	revisions  map[string][]Revision
-	payloads   map[string]AnnotationPayload
-	blackouts  map[string][]blackout.Region
-	docs       map[string]string
+	mu        sync.RWMutex
+	jobs      map[string]Job
+	bySlug    map[string]string
+	pages     map[string]Page
+	revisions map[string][]Revision
+	payloads  map[string]AnnotationPayload
+	blackouts map[string][]blackout.Region
+	docs      map[string]string
 }
 
 func NewMemory() *Memory {
@@ -39,6 +39,8 @@ func pageKey(jobID string, page int) string {
 func revKey(jobID string, page, version int) string {
 	return fmt.Sprintf("%s:%d:%d", jobID, page, version)
 }
+
+func (m *Memory) EnsureUser(_ context.Context, _, _, _ string) error { return nil }
 
 func (m *Memory) UpsertJob(_ context.Context, job Job) (Job, error) {
 	m.mu.Lock()

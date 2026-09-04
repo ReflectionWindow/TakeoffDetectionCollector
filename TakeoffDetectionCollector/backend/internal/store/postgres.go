@@ -21,6 +21,21 @@ func NewPostgres(db *sql.DB, blob storage.Blob) *Postgres {
 	return &Postgres{db: db, blob: blob}
 }
 
+// EnsureUser upserts the authenticated user so annotation_revisions.author_id
+// (a foreign key into users) always resolves. Called on write paths before a
+// revision is saved.
+func (p *Postgres) EnsureUser(ctx context.Context, id, email, name string) error {
+	if id == "" || email == "" {
+		return nil
+	}
+	_, err := p.db.ExecContext(ctx, `
+		insert into users (id, email, name)
+		values ($1::uuid, $2, $3)
+		on conflict (id) do update set email = excluded.email, name = excluded.name`,
+		id, email, name)
+	return err
+}
+
 func (p *Postgres) UpsertJob(ctx context.Context, job Job) (Job, error) {
 	if job.ID == "" {
 		row := p.db.QueryRowContext(ctx, `
@@ -159,7 +174,7 @@ func (p *Postgres) SaveRevision(ctx context.Context, rev Revision, payload Annot
 	}
 	_, err := p.db.ExecContext(ctx, `
 		insert into annotation_revisions (job_id, page_index, version, parent_version, author_id, storage_key, note, created_at)
-		values ($1,$2,$3,$4,nullif($5,''),$6,$7,$8)
+		values ($1,$2,$3,$4,nullif($5,'')::uuid,$6,$7,$8)
 		on conflict (job_id, page_index, version) do nothing`,
 		rev.JobID, rev.PageIndex, rev.Version, rev.ParentVersion, rev.AuthorID, rev.StorageKey, rev.Note, rev.CreatedAt)
 	if err != nil {

@@ -27,20 +27,31 @@ import (
 )
 
 type Server struct {
-	cfg   config.Config
-	auth  *auth.Service
-	store store.Store
-	blob  storage.Blob
-	pool  *pool.Pool
+	cfg       config.Config
+	auth      *auth.Service
+	store     store.Store
+	blob      storage.Blob
+	pool      *pool.Pool
+	storeKind string
+	dbPing    func(context.Context) error
+}
+
+// SetStoreHealth records which store backs the server and, for Postgres, a
+// ping function so /health can report live database connectivity to the
+// frontend.
+func (s *Server) SetStoreHealth(kind string, ping func(context.Context) error) {
+	s.storeKind = kind
+	s.dbPing = ping
 }
 
 func New(cfg config.Config, st store.Store, blob storage.Blob) *Server {
 	return &Server{
-		cfg:   cfg,
-		auth:  auth.New(cfg),
-		store: st,
-		blob:  blob,
-		pool:  pool.New(8),
+		cfg:       cfg,
+		auth:      auth.New(cfg),
+		store:     st,
+		blob:      blob,
+		pool:      pool.New(8),
+		storeKind: "memory",
 	}
 }
 
@@ -66,12 +77,25 @@ func (s *Server) Handler() http.Handler {
 	return s.cors(mux)
 }
 
-func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{
+func (s *Server) health(w http.ResponseWriter, r *http.Request) {
+	resp := map[string]any{
 		"ok":       true,
 		"dev_auth": s.auth.DevEnabled(),
 		"domain":   s.cfg.AllowedEmailDomain,
-	})
+		"store":    s.storeKind,
+	}
+	if s.dbPing != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := s.dbPing(ctx); err != nil {
+			resp["ok"] = false
+			resp["db_ok"] = false
+			resp["db_error"] = err.Error()
+		} else {
+			resp["db_ok"] = true
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) me(w http.ResponseWriter, r *http.Request, u auth.User) {
@@ -127,6 +151,9 @@ func (s *Server) getJob(w http.ResponseWriter, r *http.Request, _ auth.User) {
 
 func (s *Server) importCoco(w http.ResponseWriter, r *http.Request, u auth.User) {
 	ctx := r.Context()
+	if err := s.store.EnsureUser(ctx, u.ID, u.Email, u.Name); err != nil {
+		log.Printf("ensure user: %v", err)
+	}
 	var jobs []coco.JobImport
 	if dir := r.FormValue("dir"); dir != "" {
 		slugs, err := coco.DiscoverJobs(dir)
@@ -383,6 +410,9 @@ func (s *Server) saveAnnotations(w http.ResponseWriter, r *http.Request, u auth.
 		http.Error(w, err.Error(), 400)
 		return
 	}
+	if err := s.store.EnsureUser(r.Context(), u.ID, u.Email, u.Name); err != nil {
+		log.Printf("ensure user: %v", err)
+	}
 	parent := 0
 	if rev, _, err := s.store.LatestRevision(r.Context(), jobID, n); err == nil {
 		parent = rev.Version
@@ -456,6 +486,9 @@ func (s *Server) revertAnnotations(w http.ResponseWriter, r *http.Request, u aut
 		http.Error(w, err.Error(), 400)
 		return
 	}
+	if err := s.store.EnsureUser(r.Context(), u.ID, u.Email, u.Name); err != nil {
+		log.Printf("ensure user: %v", err)
+	}
 	_, old, err := s.store.GetRevision(r.Context(), jobID, n, body.Version)
 	if err != nil {
 		http.Error(w, err.Error(), 404)
@@ -518,23 +551,23 @@ func (s *Server) getVectors(w http.ResponseWriter, r *http.Request, _ auth.User)
 		vec.Empty = true
 	}
 	writeJSON(w, 200, map[string]any{
-		"job_id":           jobID,
-		"page_index":       n,
-		"pdf_page":         page.PDFPage,
-		"pdf_available":    page.PDFKey != "",
-		"coord_space":      "pt",
-		"page_width_pt":    vec.PageWidthPt,
-		"page_height_pt":   vec.PageHeightPt,
-		"image_width_px":   page.WidthPx75,
-		"image_height_px":  page.HeightPx75,
-		"rotation":         vec.Rotation,
-		"empty":            vec.Empty,
-		"extract_version":  geom.ExtractVersion,
-		"segments":         vec.Segments,
-		"fills":            vec.Fills,
-		"points":           vec.Points,
-		"dim_texts":        []any{},
-		"stats":            vec.Stats,
+		"job_id":          jobID,
+		"page_index":      n,
+		"pdf_page":        page.PDFPage,
+		"pdf_available":   page.PDFKey != "",
+		"coord_space":     "pt",
+		"page_width_pt":   vec.PageWidthPt,
+		"page_height_pt":  vec.PageHeightPt,
+		"image_width_px":  page.WidthPx75,
+		"image_height_px": page.HeightPx75,
+		"rotation":        vec.Rotation,
+		"empty":           vec.Empty,
+		"extract_version": geom.ExtractVersion,
+		"segments":        vec.Segments,
+		"fills":           vec.Fills,
+		"points":          vec.Points,
+		"dim_texts":       []any{},
+		"stats":           vec.Stats,
 	})
 }
 
