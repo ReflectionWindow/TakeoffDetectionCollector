@@ -143,6 +143,25 @@ export function bakeGeometryIndex(
     addLine(curve[0]!, curve[1]!, curve[2]!, curve[3]!, "c");
   }
 
+  for (const fill of vectors.fills ?? []) {
+    if (fill.length < 4) continue;
+    const pts: Point[] = [];
+    for (let i = 0; i + 1 < fill.length; i += 2) {
+      pts.push(pdfToPng({ x: fill[i]!, y: fill[i + 1]! }, scale));
+    }
+    if (pts.length < 2) continue;
+    for (let i = 0; i < pts.length; i += 1) {
+      const a = pts[i]!;
+      const b = pts[(i + 1) % pts.length]!;
+      const id: SegmentId = `s:${pageIndex}:f:${segSeq}`;
+      segSeq += 1;
+      const seg = makeSegment(id, a, b);
+      if (!seg) continue;
+      segments.push(seg);
+      segmentById.set(seg.id, seg);
+    }
+  }
+
   let truncated = Boolean(vectors.stats?.truncated);
   if (segments.length > MAX_BAKED_SEGMENTS) {
     truncated = true;
@@ -169,6 +188,19 @@ export function bakeGeometryIndex(
       if (!ep.segmentIds.includes(seg.id)) ep.segmentIds.push(seg.id);
     }
   }
+  for (const raw of vectors.points ?? []) {
+    if (raw.length < 2) continue;
+    const p = pdfToPng({ x: raw[0]!, y: raw[1]! }, scale);
+    const key = endpointKey(p);
+    if (epMap.has(key)) continue;
+    const id: EndpointId = `e:${pageIndex}:${epSeq}`;
+    epSeq += 1;
+    epMap.set(key, {
+      id,
+      p: { x: quantize(p.x, ENDPOINT_MERGE_PX), y: quantize(p.y, ENDPOINT_MERGE_PX) },
+      segmentIds: [],
+    });
+  }
   const endpoints = [...epMap.values()];
 
   const dimTexts: DimTextPng[] = (vectors.dim_texts ?? []).map((d) => {
@@ -187,7 +219,7 @@ export function bakeGeometryIndex(
   });
 
   const spatial = buildSpatialGrid(segments, endpoints);
-  const empty = segments.length === 0;
+  const empty = segments.length === 0 && endpoints.length === 0;
 
   return {
     pageIndex,

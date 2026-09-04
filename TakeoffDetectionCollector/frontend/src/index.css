@@ -1,0 +1,48 @@
+:root {
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  color: #111;
+  background: #f4f1ea;
+  line-height: 1.4;
+}
+* { box-sizing: border-box; }
+html, body, #root { margin: 0; height: 100%; }
+button, input, select { font: inherit; }
+a { color: inherit; }
+.muted { color: #5c5c5c; }
+.small { font-size: 12px; }
+.error { color: #b42318; }
+.eyebrow { text-transform: uppercase; letter-spacing: 0.08em; font-size: 12px; color: #6b6b6b; }
+.btn-primary, .btn-ghost {
+  border: 1px solid #111;
+  padding: 8px 12px;
+  background: #111;
+  color: #fff;
+  cursor: pointer;
+}
+.btn-ghost { background: transparent; color: #111; }
+.btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
+.file-btn { display: inline-block; }
+.auth-wrap { min-height: 100%; display: grid; place-items: center; padding: 32px; }
+.auth-card { width: min(420px, 100%); background: #fff; padding: 28px; border: 1px solid #111; display: grid; gap: 12px; }
+.app-shell { min-height: 100%; display: flex; flex-direction: column; }
+.topbar {
+  display: flex; gap: 12px; align-items: center; padding: 10px 16px;
+  border-bottom: 1px solid #111; background: #fff; flex-wrap: wrap;
+}
+.inbox { padding: 20px; display: grid; gap: 24px; }
+.import-panel { background: #fff; border: 1px solid #111; padding: 16px; display: grid; gap: 10px; }
+.row { display: flex; gap: 8px; }
+.row input { flex: 1; padding: 8px; border: 1px solid #111; }
+.jobs { width: 100%; border-collapse: collapse; background: #fff; }
+.jobs th, .jobs td { text-align: left; padding: 8px; border-bottom: 1px solid #ddd; }
+.clean-body { flex: 1; display: grid; grid-template-columns: 240px 1fr; min-height: 0; }
+.rail { border-right: 1px solid #111; background: #fff; padding: 12px; overflow: auto; display: grid; gap: 6px; align-content: start; }
+.rail button { text-align: left; background: #fff; border: 1px solid #ddd; padding: 6px 8px; cursor: pointer; }
+.rail button.active { border-color: #111; background: #111; color: #fff; }
+.rail h3 { margin: 12px 0 4px; font-size: 13px; }
+.revs { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; }
+.stage { position: relative; overflow: hidden; background: #d9d4c8; }
+.stage-inner { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
+.stage-inner img { display: block; }
+.blank-sheet { background: #fff; box-shadow: 0 0 0 1px #111; }
+.overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
