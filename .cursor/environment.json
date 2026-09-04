@@ -2,15 +2,16 @@
   "name": "TakeoffDetection",
   "user": "ubuntu",
   "install": "bash .cursor/install.sh",
+  "start": "bash .cursor/start.sh",
   "terminals": [
     {
-      "name": "dc-backend",
-      "command": "cd DataCleaning/backend && ANNOTATOR_PASSWORD=dev-password CORS_ORIGINS=http://localhost:5173,http://localhost:4173 ./.venv/bin/uvicorn app:app --host 0.0.0.0 --port 8000"
+      "name": "collector-backend",
+      "command": "cd TakeoffDetectionCollector/backend && PORT=8080 SUPABASE_DB_URL=\"postgres://collector:collector@127.0.0.1:5433/collector?sslmode=disable\" DATA_DIR=$HOME/collector-data DB_KEEPALIVE=30s go run ./cmd/collector"
     },
     {
-      "name": "dc-frontend",
-      "command": "cd DataCleaning/frontend && npm run dev -- --host 0.0.0.0 --port 5173"
+      "name": "collector-frontend",
+      "command": "cd TakeoffDetectionCollector/frontend && npm run dev -- --host 0.0.0.0 --port 5173"
     }
   ],
-  "ports": [8000, 5173]
+  "ports": [5173, 8080, 5433]
 }
