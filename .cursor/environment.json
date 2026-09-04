@@ -1,0 +1,16 @@
+{
+  "name": "TakeoffDetection",
+  "user": "ubuntu",
+  "install": "bash .cursor/install.sh",
+  "terminals": [
+    {
+      "name": "dc-backend",
+      "command": "cd DataCleaning/backend && ANNOTATOR_PASSWORD=dev-password CORS_ORIGINS=http://localhost:5173,http://localhost:4173 ./.venv/bin/uvicorn app:app --host 0.0.0.0 --port 8000"
+    },
+    {
+      "name": "dc-frontend",
+      "command": "cd DataCleaning/frontend && npm run dev -- --host 0.0.0.0 --port 5173"
+    }
+  ],
+  "ports": [8000, 5173]
+}
