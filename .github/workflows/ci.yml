@@ -81,6 +81,12 @@ jobs:
       - name: Check Vercel secrets
         id: vercel
         run: |
+          VERCEL_TOKEN=$(printf '%s' "$VERCEL_TOKEN" | tr -d '\r\n')
+          VERCEL_ORG_ID=$(printf '%s' "$VERCEL_ORG_ID" | tr -d '\r\n')
+          VERCEL_PROJECT_ID=$(printf '%s' "$VERCEL_PROJECT_ID" | tr -d '\r\n')
+          echo "VERCEL_TOKEN=$VERCEL_TOKEN" >> "$GITHUB_ENV"
+          echo "VERCEL_ORG_ID=$VERCEL_ORG_ID" >> "$GITHUB_ENV"
+          echo "VERCEL_PROJECT_ID=$VERCEL_PROJECT_ID" >> "$GITHUB_ENV"
           if [ -n "$VERCEL_TOKEN" ] && [ -n "$VERCEL_ORG_ID" ] && [ -n "$VERCEL_PROJECT_ID" ]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
           else
@@ -99,7 +105,10 @@ jobs:
         run: |
           mkdir -p .vercel
           printf '{"orgId":"%s","projectId":"%s"}\n' "$VERCEL_ORG_ID" "$VERCEL_PROJECT_ID" > .vercel/project.json
-          vercel link --yes --token="$VERCEL_TOKEN" --project="$VERCEL_PROJECT_ID" --scope="$VERCEL_ORG_ID"
+          if ! vercel link --yes --token="$VERCEL_TOKEN" --project="$VERCEL_PROJECT_ID" --scope="$VERCEL_ORG_ID"; then
+            echo "::error::VERCEL_TOKEN is not a valid Vercel account token. Create a Full Account token at https://vercel.com/account/tokens then run: gh secret set VERCEL_TOKEN -R ReflectionWindow/TakeoffDetectionCollector"
+            exit 1
+          fi
       - name: Pull env
         if: steps.vercel.outputs.ok == 'true'
         run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN" --scope="$VERCEL_ORG_ID"
