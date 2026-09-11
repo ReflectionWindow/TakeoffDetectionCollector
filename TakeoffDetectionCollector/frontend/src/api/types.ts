@@ -1,7 +1,10 @@
 export type BoxOrigin = "imported" | "user" | "model";
 
+export type PolyPoint = { x: number; y: number };
+
 export interface Box {
   box_id: string;
+  points: PolyPoint[];
   x1: number;
   y1: number;
   x2: number;
@@ -71,7 +74,7 @@ export interface PageVectorsResponse {
   stats: PageVectorsStats;
 }
 
-export type JobStatus = "imported" | "awaiting_pdf" | "ready" | "cleaning" | "done";
+export type JobStatus = "original" | "corrected" | "complete";
 
 export interface Job {
   id: string;
@@ -82,8 +85,21 @@ export interface Job {
   page_count: number;
   box_count: number;
   has_pdf: boolean;
+  claimed_by?: string;
+  claimed_email?: string;
+  claim_expires_at?: string | null;
+  corrected_by?: string;
+  corrected_email?: string;
+  verified_by?: string;
+  verified_email?: string;
+  tags?: string[];
   created_at: string;
   updated_at: string;
+}
+
+export interface JobTag {
+  id: string;
+  name: string;
 }
 
 export interface PageMeta {
@@ -101,6 +117,8 @@ export interface StoredBox {
   id: string;
   class: string;
   origin: "imported" | "user";
+  polygon_pt?: [number, number][];
+  polygon_px75?: [number, number][];
   bbox_pt: [number, number, number, number];
   bbox_px75: [number, number, number, number];
   edited: boolean;
@@ -130,4 +148,17 @@ export interface AuthUser {
   id: string;
   email: string;
   name: string;
+}
+
+export interface PageComment {
+  id: string;
+  job_id: string;
+  page_index: number;
+  author_id: string;
+  author_email: string;
+  author_name: string;
+  body: string;
+  annotation_id?: string;
+  created_at: string;
+  updated_at: string;
 }

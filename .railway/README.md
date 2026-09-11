@@ -12,4 +12,4 @@ railway config apply
 
 Secrets (`SUPABASE_*`, `CORS_ORIGINS`) stay in the Railway dashboard, not this file.
 
-PRs that touch `.railway/` get a plan comment from `.github/workflows/railway-config.yml`. Merging applies that plan. Code deploys still come from the GitHub source on the `collector` service (watch path: `TakeoffDetectionCollector/backend/**`).
+PRs that touch `.railway/` get a plan comment from `.github/workflows/railway-config.yml`. Merging applies that plan. Code deploys still come from the GitHub source on the `TakeoffDetectionCollector` service in the **DataHarvest** project (watch path: `TakeoffDetectionCollector/backend/**`).

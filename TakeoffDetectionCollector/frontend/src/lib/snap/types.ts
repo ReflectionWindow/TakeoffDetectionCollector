@@ -60,6 +60,15 @@ export type DimTextPng = {
   center: Point;
 };
 
+/** Closed color-fill polygon in PNG space, kept for the zoomed overlay. */
+export type FillPoly = {
+  points: Point[];
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+};
+
 export type SnapGuide =
   | { kind: "segment"; a: Point; b: Point }
   | { kind: "ray"; origin: Point; dir: Point }
@@ -100,6 +109,10 @@ export type GeometryIndex = {
   segments: Segment[];
   endpoints: Endpoint[];
   segmentById: Map<SegmentId, Segment>;
+  /** Color-fill polygons (PNG), separate from exploded snap edges. */
+  fills: FillPoly[];
+  /** Isolated vertices / ticks from the PDF `points[]` bucket. */
+  dots: Point[];
   dimTexts: DimTextPng[];
   empty: boolean;
   /** True when extract or client bake hit a segment budget. */

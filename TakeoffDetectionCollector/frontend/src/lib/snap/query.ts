@@ -54,8 +54,9 @@ export function querySnap(ctx: SnapContext): SnapHit | null {
   if (ctx.index.empty) return null;
 
   const zoom = ctx.zoom > 1e-9 ? ctx.zoom : 1e-9;
-  // Floor so high zoom still has a usable magnet in image space.
-  const radiusPx = Math.max(radiusPngFromScreen(ctx.radiusScreenPx, zoom), 2);
+  // Image-space search radius is screen px / zoom — no PNG floor, so a 10 CSS px
+  // magnet stays 10 CSS px whether you are zoomed out or far in.
+  const radiusPx = radiusPngFromScreen(ctx.radiusScreenPx, zoom);
   if (!(radiusPx > 0)) return null;
 
   const enabled = new Set(ctx.enabledModes ?? ALL_SNAP_MODES);
@@ -78,7 +79,7 @@ export function querySnap(ctx: SnapContext): SnapHit | null {
     enabled.delete(ORTHO_MODE);
   }
 
-  const screenRadius = Math.max(ctx.radiusScreenPx, radiusPx * zoom);
+  const screenRadius = ctx.radiusScreenPx;
 
   for (const mode of SNAP_PRIORITY) {
     if (!enabled.has(mode)) continue;

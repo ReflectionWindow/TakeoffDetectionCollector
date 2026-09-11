@@ -19,3 +19,31 @@ func TestPageSize(t *testing.T) {
 		t.Fatalf("page pt = %v x %v", w, h)
 	}
 }
+
+func TestSimilarPageSize(t *testing.T) {
+	if !SimilarPageSize(3456, 2592, 3456, 2592) {
+		t.Fatal("identical")
+	}
+	if !SimilarPageSize(3456, 2592, 2592, 3456) {
+		t.Fatal("rotated")
+	}
+	if SimilarPageSize(3456, 2592, 612, 792) {
+		t.Fatal("letter default must not replace a sheet")
+	}
+}
+
+func TestPolyFromBBoxAndFlat(t *testing.T) {
+	q := QuadFromBBox([4]float64{10, 20, 30, 40})
+	if len(q) != 4 || q[2] != [2]float64{40, 60} {
+		t.Fatalf("quad %#v", q)
+	}
+	flat := PolyToFlat(q)
+	back := FlatToPoly(flat)
+	if len(back) != 4 {
+		t.Fatalf("flat round trip %v", back)
+	}
+	bb := BBoxFromPoly(q)
+	if bb != [4]float64{10, 20, 30, 40} {
+		t.Fatalf("bbox %v", bb)
+	}
+}

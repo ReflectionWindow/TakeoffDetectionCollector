@@ -1,9 +1,10 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Navigate, useSearchParams } from "react-router-dom";
-import { devLogin, health, isAuthenticated, setToken } from "../lib/api";
+import { clearSession, devLogin, getToken, health, isSessionError, me, setToken } from "../lib/api";
 import { isSupabaseConfigured, signInWithMicrosoft } from "../lib/supabase";
 
 const COMPANY = "@reflectionwindow.com";
+const API_DOWN = "The collector API is not running. Start the backend, then try again.";
 
 export default function LoginPage() {
   const [params] = useSearchParams();
@@ -12,15 +13,51 @@ export default function LoginPage() {
   );
   const [busy, setBusy] = useState(false);
   const [devOk, setDevOk] = useState(false);
+  const [apiDown, setApiDown] = useState(false);
+  const [sessionOk, setSessionOk] = useState(false);
+  const [checking, setChecking] = useState(() => Boolean(getToken()));
   const microsoft = isSupabaseConfigured();
 
   useEffect(() => {
     void health()
-      .then((h) => setDevOk(h.dev_auth))
-      .catch(() => setDevOk(true));
+      .then((h) => {
+        setDevOk(h.dev_auth);
+        setApiDown(false);
+      })
+      .catch(() => {
+        setApiDown(true);
+        setDevOk(false);
+        setError(API_DOWN);
+      });
   }, []);
 
-  if (isAuthenticated()) return <Navigate to="/" replace />;
+  useEffect(() => {
+    if (!getToken()) {
+      setChecking(false);
+      return;
+    }
+    let alive = true;
+    void me()
+      .then(() => {
+        if (alive) setSessionOk(true);
+      })
+      .catch((err) => {
+        if (isSessionError(err)) void clearSession();
+        if (alive) setChecking(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  if (sessionOk) return <Navigate to="/" replace />;
+  if (checking) {
+    return (
+      <div className="auth-wrap">
+        <p className="muted">Checking session…</p>
+      </div>
+    );
+  }
 
   async function onMicrosoft() {
     setError(null);
@@ -57,7 +94,7 @@ export default function LoginPage() {
           until then.
         </p>
         {error ? <p className="error">{error}</p> : null}
-        <button type="button" className="btn-primary" disabled={!microsoft || busy} onClick={onMicrosoft}>
+        <button type="button" className="btn-primary" disabled={!microsoft || busy || apiDown} onClick={onMicrosoft}>
           Sign in with Microsoft
         </button>
         {!microsoft ? (
@@ -65,7 +102,7 @@ export default function LoginPage() {
         ) : null}
         {devOk ? (
           <form onSubmit={onDev}>
-            <button type="submit" className="btn-ghost" disabled={busy}>
+            <button type="submit" className="btn-ghost" disabled={busy || apiDown}>
               Dev sign-in
             </button>
           </form>

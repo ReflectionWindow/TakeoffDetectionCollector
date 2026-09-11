@@ -341,6 +341,32 @@ describe("querySnap priority", () => {
     );
     expect(hit?.mode).toBe("endpoint");
   });
+
+  it("uses on-screen distance, not a PNG-pixel floor", () => {
+    const index = unitSquareIndex();
+    // 1.5 PNG from (0,0). At zoom 8 that is 12 screen px > 10 screen radius → miss.
+    // A 2 PNG floor would have captured this.
+    expect(
+      querySnap(
+        ctx(index, {
+          cursor: { x: 1.5, y: 0 },
+          zoom: 8,
+          radiusScreenPx: 10,
+          enabledModes: ["endpoint"],
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      querySnap(
+        ctx(index, {
+          cursor: { x: 1, y: 0 },
+          zoom: 8,
+          radiusScreenPx: 10,
+          enabledModes: ["endpoint"],
+        }),
+      )?.mode,
+    ).toBe("endpoint");
+  });
 });
 
 describe("p2 modes (perp / ortho / parallel) + lock", () => {

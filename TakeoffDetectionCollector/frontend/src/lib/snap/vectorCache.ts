@@ -10,7 +10,7 @@ export function geometryCacheKey(
   imageWidthPx: number,
   imageHeightPx: number,
 ): string {
-  return `${jobId}:${pageIndex}:${imageWidthPx}x${imageHeightPx}`;
+  return `${jobId}:${pageIndex}:${imageWidthPx}x${imageHeightPx}:pdfjs-v5`;
 }
 
 export function getCachedGeometryIndex(key: string): GeometryIndex | null {

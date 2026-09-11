@@ -23,3 +23,7 @@ export function classById(id: number) {
 export function classColor(name: string): string {
   return classByName(name).color;
 }
+
+export function classNameToId(name: string): number {
+  return classByName(name).id;
+}

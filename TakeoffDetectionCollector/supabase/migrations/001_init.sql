@@ -13,10 +13,15 @@ create table if not exists jobs (
   id uuid primary key default gen_random_uuid(),
   slug text not null unique,
   title text not null,
-  status text not null default 'imported'
-    check (status in ('imported', 'awaiting_pdf', 'ready', 'cleaning', 'done')),
+  status text not null default 'original'
+    check (status in ('original', 'corrected', 'verified', 'complete')),
   source_coco_key text,
   conflict_count int not null default 0,
+  claimed_by uuid references users(id),
+  claimed_at timestamptz,
+  claim_expires_at timestamptz,
+  corrected_by uuid references users(id),
+  verified_by uuid references users(id),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -76,4 +81,5 @@ create table if not exists audit_events (
 );
 
 create index if not exists jobs_status_idx on jobs (status);
+create index if not exists jobs_claim_idx on jobs (claimed_by, claim_expires_at);
 create index if not exists revisions_job_page_idx on annotation_revisions (job_id, page_index, version desc);

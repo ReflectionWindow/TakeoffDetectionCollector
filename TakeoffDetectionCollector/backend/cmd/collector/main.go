@@ -46,6 +46,9 @@ func main() {
 		Addr:              addr,
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 15 * time.Second,
+		ReadTimeout:       15 * time.Minute,
+		WriteTimeout:      15 * time.Minute,
+		IdleTimeout:       2 * time.Minute,
 	}
 	log.Fatal(s.ListenAndServe())
 }

@@ -69,6 +69,15 @@ export function collectEndpointHits(
   lock: LockState,
 ): SnapHit[] {
   const hits: SnapHit[] = [];
+  // Overlay ticks (isolated PDF crosses/dots) sit on exact PNG coords and
+  // must compete with line endpoints, not be skipped.
+  if (lock.kind !== "segment") {
+    for (const p of index.dots ?? []) {
+      const d = dist(cursor, p);
+      if (d > radiusPx) continue;
+      hits.push(hitBase("endpoint", p, cursor, zoom));
+    }
+  }
   const ids = queryEndpointIds(index.spatial, cursor.x, cursor.y, radiusPx);
   for (const id of ids) {
     const ep = index.spatial.endpointsById.get(id);
@@ -172,6 +181,7 @@ export function collectIntersectionHits(
         hitBase("intersection", p, cursor, zoom, {
           segmentId: lockedId ?? a.id,
           segmentIdB: b.id === (lockedId ?? a.id) ? a.id : b.id,
+          guide: { kind: "segment", a: a.a, b: a.b },
         }),
       );
     }

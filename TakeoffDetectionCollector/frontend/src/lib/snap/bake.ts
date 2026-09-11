@@ -8,6 +8,7 @@ import type {
   DimTextPng,
   Endpoint,
   EndpointId,
+  FillPoly,
   GeometryIndex,
   Point,
   Segment,
@@ -26,6 +27,21 @@ function aabb(a: Point, b: Point) {
     maxX: Math.max(a.x, b.x),
     maxY: Math.max(a.y, b.y),
   };
+}
+
+function polyBounds(pts: Point[]): FillPoly | null {
+  if (pts.length < 3) return null;
+  let minX = pts[0]!.x;
+  let minY = pts[0]!.y;
+  let maxX = minX;
+  let maxY = minY;
+  for (const p of pts) {
+    if (p.x < minX) minX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y > maxY) maxY = p.y;
+  }
+  return { points: pts, minX, minY, maxX, maxY };
 }
 
 function makeSegment(id: SegmentId, a: Point, b: Point): Segment | null {
@@ -89,6 +105,8 @@ export function bakeGeometryIndex(
 
   const pageIndex = opts?.pageIndex ?? vectors.page_index;
   const segments: Segment[] = [];
+  const fills: FillPoly[] = [];
+  const dots: Point[] = [];
   const segmentById = new Map<SegmentId, Segment>();
   let segSeq = 0;
 
@@ -111,11 +129,19 @@ export function bakeGeometryIndex(
   for (const rect of vectors.segments.rects ?? []) {
     if (rect.length < 4) continue;
     const [x0, y0, x1, y1] = rect;
-    // Explode rect into 4 edges for snap.
+    // Explode rect into 4 edges for snap. CAD poche is usually `re f`, so
+    // keep the quad for the zoomed color-fill overlay too.
     addLine(x0!, y0!, x1!, y0!, "re");
     addLine(x1!, y0!, x1!, y1!, "re");
     addLine(x1!, y1!, x0!, y1!, "re");
     addLine(x0!, y1!, x0!, y0!, "re");
+    const fill = polyBounds([
+      pdfToPng({ x: x0!, y: y0! }, scale),
+      pdfToPng({ x: x1!, y: y0! }, scale),
+      pdfToPng({ x: x1!, y: y1! }, scale),
+      pdfToPng({ x: x0!, y: y1! }, scale),
+    ]);
+    if (fill) fills.push(fill);
   }
 
   for (const quad of vectors.segments.quads ?? []) {
@@ -126,6 +152,8 @@ export function bakeGeometryIndex(
       { x: quad[4]!, y: quad[5]! },
       { x: quad[6]!, y: quad[7]! },
     ].map((p) => pdfToPng(p, scale));
+    const fill = polyBounds(pts);
+    if (fill) fills.push(fill);
     for (let i = 0; i < 4; i += 1) {
       const a = pts[i]!;
       const b = pts[(i + 1) % 4]!;
@@ -150,6 +178,16 @@ export function bakeGeometryIndex(
       pts.push(pdfToPng({ x: fill[i]!, y: fill[i + 1]! }, scale));
     }
     if (pts.length < 2) continue;
+    const poly = polyBounds(pts);
+    if (poly) fills.push(poly);
+    const w = poly ? poly.maxX - poly.minX : 0;
+    const h = poly ? poly.maxY - poly.minY : 0;
+    const pageArea = imageWidthPx * imageHeightPx;
+    if (pageArea > 0 && w * h > 0.45 * pageArea) continue;
+    // Elongated skinny poche is already exploded as long faces in extract.
+    // Fat fills (glass / openings) still need their outline as snap edges.
+    const skinnyMullion = Math.min(w, h) <= 16 && Math.max(w, h) >= Math.min(w, h) * 3;
+    if (skinnyMullion) continue;
     for (let i = 0; i < pts.length; i += 1) {
       const a = pts[i]!;
       const b = pts[(i + 1) % pts.length]!;
@@ -191,6 +229,7 @@ export function bakeGeometryIndex(
   for (const raw of vectors.points ?? []) {
     if (raw.length < 2) continue;
     const p = pdfToPng({ x: raw[0]!, y: raw[1]! }, scale);
+    dots.push(p);
     const key = endpointKey(p);
     if (epMap.has(key)) continue;
     const id: EndpointId = `e:${pageIndex}:${epSeq}`;
@@ -232,6 +271,8 @@ export function bakeGeometryIndex(
     segments,
     endpoints,
     segmentById,
+    fills,
+    dots,
     dimTexts,
     empty,
     truncated,

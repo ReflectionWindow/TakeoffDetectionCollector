@@ -9,6 +9,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -45,12 +47,16 @@ func (s *Server) SetStoreHealth(kind string, ping func(context.Context) error) {
 }
 
 func New(cfg config.Config, st store.Store, blob storage.Blob) *Server {
+	workers := cfg.IngestWorkers
+	if workers < 1 {
+		workers = 16
+	}
 	return &Server{
 		cfg:       cfg,
 		auth:      auth.New(cfg),
 		store:     st,
 		blob:      blob,
-		pool:      pool.New(8),
+		pool:      pool.New(workers),
 		storeKind: "memory",
 	}
 }
@@ -62,8 +68,17 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/auth/dev", s.authDev)
 	mux.HandleFunc("POST /v1/auth/supabase", s.authSupabase)
 	mux.HandleFunc("GET /v1/jobs", s.withAuth(s.listJobs))
+	mux.HandleFunc("POST /v1/jobs/next", s.withAuth(s.claimNext))
 	mux.HandleFunc("GET /v1/jobs/{id}", s.withAuth(s.getJob))
+	mux.HandleFunc("DELETE /v1/jobs/{id}", s.withAuth(s.deleteJob))
+	mux.HandleFunc("POST /v1/jobs/{id}/claim", s.withAuth(s.claimJob))
+	mux.HandleFunc("POST /v1/jobs/{id}/heartbeat", s.withAuth(s.heartbeatJob))
+	mux.HandleFunc("POST /v1/jobs/{id}/release", s.withAuth(s.releaseJob))
+	mux.HandleFunc("POST /v1/jobs/{id}/stage", s.withAuth(s.setStage))
+	mux.HandleFunc("GET /v1/tags", s.withAuth(s.listTags))
+	mux.HandleFunc("PUT /v1/jobs/{id}/tags", s.withAuth(s.setJobTags))
 	mux.HandleFunc("POST /v1/imports/coco", s.withAuth(s.importCoco))
+	mux.HandleFunc("POST /v1/imports/pdfs", s.withAuth(s.importPDFs))
 	mux.HandleFunc("POST /v1/jobs/{id}/pdf", s.withAuth(s.attachPDF))
 	mux.HandleFunc("GET /v1/jobs/{id}/pdf", s.withAuth(s.getPDF))
 	mux.HandleFunc("GET /v1/jobs/{id}/pages/{n}/annotations", s.withAuth(s.getAnnotations))
@@ -73,11 +88,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/jobs/{id}/pages/{n}/vectors", s.withAuth(s.getVectors))
 	mux.HandleFunc("PUT /v1/jobs/{id}/pages/{n}/blackouts", s.withAuth(s.putBlackouts))
 	mux.HandleFunc("GET /v1/jobs/{id}/pages/{n}/blackouts", s.withAuth(s.getBlackouts))
+	mux.HandleFunc("GET /v1/jobs/{id}/pages/{n}/comments", s.withAuth(s.listComments))
+	mux.HandleFunc("POST /v1/jobs/{id}/pages/{n}/comments", s.withAuth(s.createComment))
+	mux.HandleFunc("DELETE /v1/jobs/{id}/pages/{n}/comments/{cid}", s.withAuth(s.deleteComment))
 	mux.HandleFunc("GET /v1/jobs/{id}/export/coco", s.withAuth(s.exportCoco))
 	return s.cors(mux)
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
+	ok := true
 	resp := map[string]any{
 		"ok":       true,
 		"dev_auth": s.auth.DevEnabled(),
@@ -88,6 +107,7 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 		defer cancel()
 		if err := s.dbPing(ctx); err != nil {
+			ok = false
 			resp["ok"] = false
 			resp["db_ok"] = false
 			resp["db_error"] = err.Error()
@@ -95,7 +115,11 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 			resp["db_ok"] = true
 		}
 	}
-	writeJSON(w, http.StatusOK, resp)
+	status := http.StatusOK
+	if !ok {
+		status = http.StatusServiceUnavailable
+	}
+	writeJSON(w, status, resp)
 }
 
 func (s *Server) me(w http.ResponseWriter, r *http.Request, u auth.User) {
@@ -121,17 +145,54 @@ func (s *Server) authSupabase(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"token": bearerOf(r), "user": u})
+	token, err := s.auth.IssueSessionToken(u)
+	if err != nil {
+		token = bearerOf(r)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"token": token, "user": u})
 }
 
 func (s *Server) listJobs(w http.ResponseWriter, r *http.Request, _ auth.User) {
-	jobs, err := s.store.ListJobs(r.Context())
+	q := store.JobListQuery{
+		Stage:  store.JobStatus(r.URL.Query().Get("stage")),
+		Tags:   r.URL.Query()["tag"],
+		Limit:  atoiDefault(r.URL.Query().Get("limit"), store.DefaultJobPageSize),
+		Offset: atoiDefault(r.URL.Query().Get("offset"), 0),
+	}
+	list, err := s.store.ListJobs(r.Context(), q)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	sort.Slice(jobs, func(i, j int) bool { return jobs[i].Slug < jobs[j].Slug })
-	writeJSON(w, 200, map[string]any{"jobs": jobs})
+	writeJSON(w, 200, list)
+}
+
+func (s *Server) deleteJob(w http.ResponseWriter, r *http.Request, _ auth.User) {
+	id := r.PathValue("id")
+	keys, err := s.store.DeleteJob(r.Context(), id)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			http.Error(w, err.Error(), 404)
+			return
+		}
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	s.purgeJobBlobs(keys)
+}
+
+func (s *Server) purgeJobBlobs(keys []string) {
+	if len(keys) == 0 || s.blob == nil {
+		return
+	}
+	go func() {
+		for _, key := range keys {
+			if err := s.blob.Delete(key); err != nil {
+				log.Printf("purge blob %s: %v", key, err)
+			}
+		}
+	}()
 }
 
 func (s *Server) getJob(w http.ResponseWriter, r *http.Request, _ auth.User) {
@@ -225,10 +286,11 @@ func (s *Server) persistImport(ctx context.Context, imp coco.JobImport, u auth.U
 	job := store.Job{
 		Slug:   imp.Slug,
 		Title:  imp.Title,
-		Status: store.StatusAwaitingPDF,
+		Status: store.StatusOriginal,
 	}
 	if err == nil {
 		job.ID = existing.ID
+		job.Status = store.NormalizeStatus(existing.Status)
 	}
 	job, err = s.store.UpsertJob(ctx, job)
 	if err != nil {
@@ -303,6 +365,112 @@ func unzipCoco(data []byte) ([]coco.JobImport, error) {
 	return out, nil
 }
 
+type pdfAttachResult struct {
+	Job       store.Job `json:"job"`
+	Slug      string    `json:"slug"`
+	PageCount int       `json:"page_count"`
+	SHA256    string    `json:"sha256"`
+}
+
+func slugFromPDFName(name string) string {
+	base := filepath.Base(filepath.ToSlash(name))
+	return strings.TrimSuffix(base, filepath.Ext(base))
+}
+
+func (s *Server) importPDFs(w http.ResponseWriter, r *http.Request, _ auth.User) {
+	ctx := r.Context()
+	type pending struct {
+		slug string
+		data []byte
+	}
+	var files []pending
+
+	if dir := r.FormValue("dir"); dir != "" {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			if !strings.HasSuffix(strings.ToLower(name), ".pdf") {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(dir, name))
+			if err != nil {
+				log.Printf("pdf read %s: %v", name, err)
+				continue
+			}
+			files = append(files, pending{slug: slugFromPDFName(name), data: data})
+		}
+	} else {
+		if err := r.ParseMultipartForm(512 << 20); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		if r.MultipartForm == nil {
+			http.Error(w, "dir or files required", 400)
+			return
+		}
+		for _, hdrs := range r.MultipartForm.File {
+			for _, hdr := range hdrs {
+				f, err := hdr.Open()
+				if err != nil {
+					continue
+				}
+				data, err := io.ReadAll(f)
+				f.Close()
+				if err != nil {
+					continue
+				}
+				files = append(files, pending{slug: slugFromPDFName(hdr.Filename), data: data})
+			}
+		}
+	}
+
+	type outcome struct {
+		res  pdfAttachResult
+		err  error
+		skip string
+	}
+	out := make([]outcome, len(files))
+	s.pool.Do(len(files), func(i int) {
+		f := files[i]
+		job, err := s.store.GetJobBySlug(ctx, f.slug)
+		if err != nil {
+			out[i].skip = "no matching job"
+			return
+		}
+		res, err := s.attachPDFBytes(ctx, job, f.data)
+		if err != nil {
+			out[i].err = err
+			return
+		}
+		out[i].res = res
+	})
+
+	attached := make([]pdfAttachResult, 0, len(out))
+	skipped := 0
+	for i, o := range out {
+		if o.err != nil {
+			log.Printf("pdf attach %s: %v", files[i].slug, o.err)
+			skipped++
+			continue
+		}
+		if o.skip != "" {
+			skipped++
+			continue
+		}
+		if o.res.Job.ID != "" {
+			attached = append(attached, o.res)
+		}
+	}
+	writeJSON(w, 200, map[string]any{"attached": len(attached), "skipped": skipped, "jobs": attached})
+}
+
 func (s *Server) attachPDF(w http.ResponseWriter, r *http.Request, _ auth.User) {
 	job, err := s.store.GetJob(r.Context(), r.PathValue("id"))
 	if err != nil {
@@ -324,25 +492,32 @@ func (s *Server) attachPDF(w http.ResponseWriter, r *http.Request, _ auth.User) 
 		http.Error(w, err.Error(), 400)
 		return
 	}
-	if len(data) < 5 || string(data[:4]) != "%PDF" {
-		http.Error(w, "not a pdf", 400)
+	res, err := s.attachPDFBytes(r.Context(), job, data)
+	if err != nil {
+		http.Error(w, err.Error(), 400)
 		return
 	}
+	writeJSON(w, 200, map[string]any{"ok": true, "page_count": res.PageCount, "sha256": res.SHA256})
+}
+
+func (s *Server) attachPDFBytes(ctx context.Context, job store.Job, data []byte) (pdfAttachResult, error) {
+	if len(data) < 5 || string(data[:4]) != "%PDF" {
+		return pdfAttachResult{}, fmt.Errorf("not a pdf")
+	}
+	data = geom.StripAnnots(data)
 	sum := storage.SHA256Hex(data)
 	key := fmt.Sprintf("pdfs/%s/%s.pdf", job.ID, sum)
 	if err := s.blob.Put(key, data, "application/pdf"); err != nil {
-		http.Error(w, err.Error(), 500)
-		return
+		return pdfAttachResult{}, err
 	}
 	n := geom.PageCount(data)
 	if n == 0 {
 		n = 1
 	}
-	if err := s.store.SetDocument(r.Context(), job.ID, key, sum, n); err != nil {
-		http.Error(w, err.Error(), 500)
-		return
+	if err := s.store.SetDocument(ctx, job.ID, key, sum, n); err != nil {
+		return pdfAttachResult{}, err
 	}
-	pages, _ := s.store.ListPages(r.Context(), job.ID)
+	pages, _ := s.store.ListPages(ctx, job.ID)
 	s.pool.Do(len(pages), func(i int) {
 		p := pages[i]
 		vec, err := geom.ExtractPage(data, p.PageIndex)
@@ -350,7 +525,7 @@ func (s *Server) attachPDF(w http.ResponseWriter, r *http.Request, _ auth.User) 
 			log.Printf("extract %s p%d: %v", job.ID, p.PageIndex, err)
 			return
 		}
-		if vec.PageWidthPt > 0 {
+		if vec.PageWidthPt > 0 && coords.SimilarPageSize(p.WidthPt, p.HeightPt, vec.PageWidthPt, vec.PageHeightPt) {
 			p.WidthPt = vec.PageWidthPt
 			p.HeightPt = vec.PageHeightPt
 		}
@@ -359,11 +534,18 @@ func (s *Server) attachPDF(w http.ResponseWriter, r *http.Request, _ auth.User) 
 		_ = s.blob.Put(vk, raw, "application/json")
 		p.VectorsKey = vk
 		p.PDFKey = key
-		_ = s.store.UpsertPage(r.Context(), p)
+		_ = s.store.UpsertPage(ctx, p)
 	})
-	job.Status = store.StatusReady
-	_ = s.store.UpdateJob(r.Context(), job)
-	writeJSON(w, 200, map[string]any{"ok": true, "page_count": n, "sha256": sum})
+	job.Status = store.NormalizeStatus(job.Status)
+	if err := s.store.UpdateJob(ctx, job); err != nil {
+		return pdfAttachResult{}, err
+	}
+	fresh, err := s.store.GetJob(ctx, job.ID)
+	if err != nil {
+		fresh = job
+		fresh.HasPDF = true
+	}
+	return pdfAttachResult{Job: fresh, Slug: job.Slug, PageCount: n, SHA256: sum}, nil
 }
 
 func (s *Server) getPDF(w http.ResponseWriter, r *http.Request, _ auth.User) {
@@ -375,6 +557,15 @@ func (s *Server) getPDF(w http.ResponseWriter, r *http.Request, _ auth.User) {
 	key := pages[0].PDFKey
 	if key == "" {
 		http.Error(w, "no pdf", 404)
+		return
+	}
+	// Sheet PDFs run to several MB and the storage key embeds the content hash,
+	// so a revalidating client can be answered with a 304 instead of the body.
+	etag := `"` + path.Base(strings.TrimSuffix(key, ".pdf")) + `"`
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
+	if match := r.Header.Get("If-None-Match"); match != "" && strings.Contains(match, etag) {
+		w.WriteHeader(http.StatusNotModified)
 		return
 	}
 	data, err := s.blob.Get(key)
@@ -405,6 +596,10 @@ type saveBody struct {
 func (s *Server) saveAnnotations(w http.ResponseWriter, r *http.Request, u auth.User) {
 	jobID := r.PathValue("id")
 	n, _ := strconv.Atoi(r.PathValue("n"))
+	if _, err := s.requireClaim(r.Context(), jobID, u); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
 	var body saveBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), 400)
@@ -427,9 +622,11 @@ func (s *Server) saveAnnotations(w http.ResponseWriter, r *http.Request, u auth.
 		version = parent + 1
 	}
 	for i := range body.Boxes {
-		if body.Boxes[i].BBoxPt == [4]float64{} && body.Boxes[i].BBoxPx75 != [4]float64{} {
-			body.Boxes[i].BBoxPt = coords.BBoxPx75ToPt(body.Boxes[i].BBoxPx75)
-		}
+		pt, px, bPt, bPx := coords.FillBoxPolys(body.Boxes[i].PolygonPt, body.Boxes[i].PolygonPx75, body.Boxes[i].BBoxPt, body.Boxes[i].BBoxPx75)
+		body.Boxes[i].PolygonPt = pt
+		body.Boxes[i].PolygonPx75 = px
+		body.Boxes[i].BBoxPt = bPt
+		body.Boxes[i].BBoxPx75 = bPx
 		if body.Boxes[i].Origin == "" {
 			body.Boxes[i].Origin = "user"
 		}
@@ -455,10 +652,6 @@ func (s *Server) saveAnnotations(w http.ResponseWriter, r *http.Request, u auth.
 	if err := s.store.SaveRevision(r.Context(), rev, payload); err != nil {
 		http.Error(w, err.Error(), 500)
 		return
-	}
-	if job, err := s.store.GetJob(r.Context(), jobID); err == nil {
-		job.Status = store.StatusCleaning
-		_ = s.store.UpdateJob(r.Context(), job)
 	}
 	writeJSON(w, 200, map[string]any{"revision": rev, "payload": payload})
 }
@@ -538,7 +731,7 @@ func (s *Server) getVectors(w http.ResponseWriter, r *http.Request, _ auth.User)
 			raw, _ := json.Marshal(vec)
 			_ = s.blob.Put(vk, raw, "application/json")
 			page.VectorsKey = vk
-			if vec.PageWidthPt > 0 {
+			if vec.PageWidthPt > 0 && coords.SimilarPageSize(page.WidthPt, page.HeightPt, vec.PageWidthPt, vec.PageHeightPt) {
 				page.WidthPt = vec.PageWidthPt
 				page.HeightPt = vec.PageHeightPt
 			}
@@ -627,6 +820,227 @@ func (s *Server) exportCoco(w http.ResponseWriter, r *http.Request, _ auth.User)
 	w.Write(data)
 }
 
+func (s *Server) claimTTL() time.Duration {
+	if s.cfg.ClaimTTL > 0 {
+		return s.cfg.ClaimTTL
+	}
+	return store.DefaultClaimTTL
+}
+
+func (s *Server) requireClaim(ctx context.Context, jobID string, u auth.User) (store.Job, error) {
+	job, err := s.store.GetJob(ctx, jobID)
+	if err != nil {
+		return store.Job{}, err
+	}
+	if store.NormalizeStatus(job.Status) == store.StatusComplete {
+		return job, fmt.Errorf("job is complete")
+	}
+	return s.takeClaim(ctx, job, u)
+}
+
+func (s *Server) requireHolder(ctx context.Context, jobID string, u auth.User) (store.Job, error) {
+	job, err := s.store.GetJob(ctx, jobID)
+	if err != nil {
+		return store.Job{}, err
+	}
+	return s.takeClaim(ctx, job, u)
+}
+
+func (s *Server) takeClaim(ctx context.Context, job store.Job, u auth.User) (store.Job, error) {
+	now := time.Now().UTC()
+	if job.HeldBy(u.ID, now) {
+		return s.store.HeartbeatJob(ctx, job.ID, u.ID, s.claimTTL())
+	}
+	if !job.ClaimableBy(u.ID, now) {
+		who := job.ClaimedEmail
+		if who == "" {
+			who = "another user"
+		}
+		return job, fmt.Errorf("claimed by %s", who)
+	}
+	if err := s.store.EnsureUser(ctx, u.ID, u.Email, u.Name); err != nil {
+		log.Printf("ensure user: %v", err)
+	}
+	return s.store.ClaimJob(ctx, job.ID, u.ID, u.Email, s.claimTTL())
+}
+
+func (s *Server) claimJob(w http.ResponseWriter, r *http.Request, u auth.User) {
+	if err := s.store.EnsureUser(r.Context(), u.ID, u.Email, u.Name); err != nil {
+		log.Printf("ensure user: %v", err)
+	}
+	job, err := s.store.ClaimJob(r.Context(), r.PathValue("id"), u.ID, u.Email, s.claimTTL())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"job": job})
+}
+
+func (s *Server) heartbeatJob(w http.ResponseWriter, r *http.Request, u auth.User) {
+	job, err := s.store.HeartbeatJob(r.Context(), r.PathValue("id"), u.ID, s.claimTTL())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"job": job})
+}
+
+func (s *Server) releaseJob(w http.ResponseWriter, r *http.Request, u auth.User) {
+	job, err := s.store.ReleaseJob(r.Context(), r.PathValue("id"), u.ID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"job": job})
+}
+
+func (s *Server) claimNext(w http.ResponseWriter, r *http.Request, u auth.User) {
+	stage := store.StatusOriginal
+	if r.URL.Query().Get("stage") == string(store.StatusCorrected) {
+		stage = store.StatusCorrected
+	}
+	if err := s.store.EnsureUser(r.Context(), u.ID, u.Email, u.Name); err != nil {
+		log.Printf("ensure user: %v", err)
+	}
+	job, err := s.store.ClaimNext(r.Context(), u.ID, u.Email, stage, s.claimTTL())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"job": job})
+}
+
+func (s *Server) setStage(w http.ResponseWriter, r *http.Request, u auth.User) {
+	var body struct {
+		Stage store.JobStatus `json:"stage"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	if err := s.store.EnsureUser(r.Context(), u.ID, u.Email, u.Name); err != nil {
+		log.Printf("ensure user: %v", err)
+	}
+	if _, err := s.requireHolder(r.Context(), r.PathValue("id"), u); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	job, err := s.store.SetStage(r.Context(), r.PathValue("id"), u.ID, u.Email, body.Stage)
+	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"job": job})
+}
+
+func (s *Server) listTags(w http.ResponseWriter, r *http.Request, _ auth.User) {
+	tags, err := s.store.ListTags(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if tags == nil {
+		tags = []store.Tag{}
+	}
+	writeJSON(w, 200, map[string]any{"tags": tags})
+}
+
+func (s *Server) listComments(w http.ResponseWriter, r *http.Request, _ auth.User) {
+	jobID := r.PathValue("id")
+	n, _ := strconv.Atoi(r.PathValue("n"))
+	comments, err := s.store.ListPageComments(r.Context(), jobID, n)
+	if err != nil {
+		status := 500
+		if strings.Contains(err.Error(), "not found") {
+			status = 404
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+	if comments == nil {
+		comments = []store.PageComment{}
+	}
+	writeJSON(w, 200, map[string]any{"comments": comments})
+}
+
+func (s *Server) createComment(w http.ResponseWriter, r *http.Request, u auth.User) {
+	jobID := r.PathValue("id")
+	n, _ := strconv.Atoi(r.PathValue("n"))
+	var body struct {
+		Body         string `json:"body"`
+		AnnotationID string `json:"annotation_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	if err := s.store.EnsureUser(r.Context(), u.ID, u.Email, u.Name); err != nil {
+		log.Printf("ensure user: %v", err)
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	comment, err := s.store.CreatePageComment(r.Context(), store.PageComment{
+		JobID:        jobID,
+		PageIndex:    n,
+		AuthorID:     u.ID,
+		AuthorEmail:  u.Email,
+		AuthorName:   u.Name,
+		Body:         body.Body,
+		AnnotationID: body.AnnotationID,
+	})
+	if err != nil {
+		msg := err.Error()
+		status := 400
+		if strings.Contains(msg, "not found") {
+			status = 404
+		}
+		http.Error(w, msg, status)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"comment": comment})
+}
+
+func (s *Server) deleteComment(w http.ResponseWriter, r *http.Request, u auth.User) {
+	err := s.store.DeletePageComment(r.Context(), r.PathValue("id"), r.PathValue("cid"), u.ID)
+	if err != nil {
+		msg := err.Error()
+		status := 400
+		switch {
+		case strings.Contains(msg, "not found"):
+			status = 404
+		case strings.Contains(msg, "not the author"):
+			status = http.StatusForbidden
+		}
+		http.Error(w, msg, status)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+func (s *Server) setJobTags(w http.ResponseWriter, r *http.Request, _ auth.User) {
+	var body struct {
+		Tags []string `json:"tags"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	if body.Tags == nil {
+		body.Tags = []string{}
+	}
+	job, err := s.store.SetJobTags(r.Context(), r.PathValue("id"), body.Tags)
+	if err != nil {
+		msg := err.Error()
+		status := 400
+		if strings.Contains(msg, "not found") {
+			status = 404
+		}
+		http.Error(w, msg, status)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"job": job})
+}
+
 func (s *Server) withAuth(fn func(http.ResponseWriter, *http.Request, auth.User)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u, err := s.auth.FromRequest(r)
@@ -643,13 +1057,10 @@ func (s *Server) withAuth(fn func(http.ResponseWriter, *http.Request, auth.User)
 }
 
 func (s *Server) cors(next http.Handler) http.Handler {
-	allowed := map[string]bool{}
-	for _, o := range s.cfg.CORSOrigins {
-		allowed[o] = true
-	}
+	allowed := s.cfg.CORSOrigins
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		if allowed[origin] {
+		if originAllowed(origin, allowed) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
 		}
@@ -663,10 +1074,49 @@ func (s *Server) cors(next http.Handler) http.Handler {
 	})
 }
 
+func originAllowed(origin string, allowed []string) bool {
+	if origin == "" {
+		return false
+	}
+	for _, o := range allowed {
+		if o == origin || wildcardOrigin(o, origin) {
+			return true
+		}
+	}
+	return false
+}
+
+// wildcardOrigin matches a single * in a CORS origin, e.g.
+// https://*.vercel.app against https://collector-abc.vercel.app.
+func wildcardOrigin(pattern, origin string) bool {
+	prefix, suffix, ok := strings.Cut(pattern, "*")
+	if !ok || prefix == "" {
+		return false
+	}
+	if !strings.HasPrefix(origin, prefix) || !strings.HasSuffix(origin, suffix) {
+		return false
+	}
+	mid := strings.TrimPrefix(origin, prefix)
+	mid = strings.TrimSuffix(mid, suffix)
+	return mid != "" && !strings.ContainsAny(mid, "/:@")
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+func atoiDefault(raw string, fallback int) int {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback
+	}
+	return n
 }
 
 func bearerOf(r *http.Request) string {

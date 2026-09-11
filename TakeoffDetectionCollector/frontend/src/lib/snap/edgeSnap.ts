@@ -6,9 +6,17 @@
  */
 
 import type { Box } from "../../api/types";
-import { MIN_BOX_SIZE, type Rect, type ResizeHandle } from "../geometry";
-import { querySegmentIdsInAabb } from "./spatial";
-import type { GeometryIndex, Segment, SegmentId, SnapGuide, SnapHit } from "./types";
+import {
+  MIN_BOX_SIZE,
+  pointsOf,
+  quadFromRect,
+  withAABB,
+  type Rect,
+  type ResizeHandle,
+} from "../geometry";
+import { dist } from "./math";
+import { queryEndpointIds, querySegmentIdsInAabb } from "./spatial";
+import type { GeometryIndex, Point, Segment, SegmentId, SnapGuide, SnapHit } from "./types";
 
 /** ~8° — diagonals / leaders / leftover hatch do not pull AABB borders. */
 export const AXIS_ALIGN_MAX_SIN = Math.sin((8 * Math.PI) / 180);
@@ -652,6 +660,13 @@ export function snapModelBoxes(
   let changed = false;
   const next = boxes.map((box) => {
     if (!isModelUnedited(box) || isTiny(box)) return box;
+    const pts = pointsOf(box);
+    if (!isAxisAlignedQuad(pts)) {
+      const snapped = snapPolygonVertices(pts, index, bandPx);
+      if (samePoints(pts, snapped)) return box;
+      changed = true;
+      return withAABB(box, snapped);
+    }
     const rect = { x1: box.x1, y1: box.y1, x2: box.x2, y2: box.y2 };
     const assigned: Partial<Record<BoxEdge, number>> = {};
     const q = { minSize, maxSegToEdge: AUTO_SNAP_MAX_SEG_TO_EDGE };
@@ -660,9 +675,39 @@ export function snapModelBoxes(
       if (hit) assigned[edge] = hit.coord;
     }
     const nextRect = applyEdgeCoords(rect, assigned, minSize);
-    if (sameRect(rect, nextRect)) return box;
+    if (sameRect(rect, nextRect)) return withAABB(box, pts);
     changed = true;
-    return { ...box, ...nextRect };
+    return withAABB({ ...box, ...nextRect }, quadFromRect(nextRect));
   });
   return { boxes: next, changed };
+}
+
+function isAxisAlignedQuad(pts: Point[]): boolean {
+  if (pts.length !== 4) return false;
+  const xs = new Set(pts.map((p) => p.x));
+  const ys = new Set(pts.map((p) => p.y));
+  return xs.size === 2 && ys.size === 2;
+}
+
+function samePoints(a: Point[], b: Point[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((p, i) => p.x === b[i]!.x && p.y === b[i]!.y);
+}
+
+function snapPolygonVertices(pts: Point[], index: GeometryIndex, bandPx: number): Point[] {
+  return pts.map((p) => {
+    const ids = queryEndpointIds(index.spatial, p.x, p.y, bandPx);
+    let best: Point | null = null;
+    let bestD = bandPx;
+    for (const id of ids) {
+      const ep = index.spatial.endpointsById.get(id);
+      if (!ep) continue;
+      const d = dist(p, ep.p);
+      if (d <= bestD) {
+        bestD = d;
+        best = ep.p;
+      }
+    }
+    return best ?? p;
+  });
 }

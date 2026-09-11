@@ -32,14 +32,15 @@ type Category struct {
 }
 
 type Annotation struct {
-	ID         int       `json:"id"`
-	ImageID    int       `json:"image_id"`
-	CategoryID int       `json:"category_id"`
-	BBox       []float64 `json:"bbox"`
-	Area       float64   `json:"area"`
-	IsCrowd    int       `json:"iscrowd"`
-	PageIndex  int       `json:"page_index"`
-	PocClass   string    `json:"poc_class,omitempty"`
+	ID           int         `json:"id"`
+	ImageID      int         `json:"image_id"`
+	CategoryID   int         `json:"category_id"`
+	BBox         []float64   `json:"bbox"`
+	Segmentation [][]float64 `json:"segmentation,omitempty"`
+	Area         float64     `json:"area"`
+	IsCrowd      int         `json:"iscrowd"`
+	PageIndex    int         `json:"page_index"`
+	PocClass     string      `json:"poc_class,omitempty"`
 }
 
 type JobImport struct {
@@ -88,7 +89,15 @@ func Parse(data []byte, slug string) (JobImport, error) {
 	}
 	byPage := map[int][]store.Box{}
 	for _, a := range f.Annotations {
-		if len(a.BBox) < 4 {
+		var bbox [4]float64
+		if len(a.BBox) >= 4 {
+			bbox = [4]float64{a.BBox[0], a.BBox[1], a.BBox[2], a.BBox[3]}
+		}
+		var polyPx [][2]float64
+		if len(a.Segmentation) > 0 {
+			polyPx = coords.FlatToPoly(a.Segmentation[0])
+		}
+		if polyPx == nil && bbox == [4]float64{} {
 			continue
 		}
 		im, ok := img[a.ImageID]
@@ -100,16 +109,18 @@ func Parse(data []byte, slug string) (JobImport, error) {
 		if class == "" {
 			class = cat[a.CategoryID]
 		}
-		bbox := [4]float64{a.BBox[0], a.BBox[1], a.BBox[2], a.BBox[3]}
+		polyPt, polyPx, bPt, bPx := coords.FillBoxPolys(nil, polyPx, [4]float64{}, bbox)
 		byPage[pageIndex] = append(byPage[pageIndex], store.Box{
-			ID:       fmt.Sprintf("coco-%d", a.ID),
-			Class:    class,
-			Origin:   "imported",
-			BBoxPx75: bbox,
-			BBoxPt:   coords.BBoxPx75ToPt(bbox),
-			Edited:   false,
-			CocoID:   a.ID,
-			Category: a.CategoryID,
+			ID:          fmt.Sprintf("coco-%d", a.ID),
+			Class:       class,
+			Origin:      "imported",
+			PolygonPt:   polyPt,
+			PolygonPx75: polyPx,
+			BBoxPt:      bPt,
+			BBoxPx75:    bPx,
+			Edited:      false,
+			CocoID:      a.ID,
+			Category:    a.CategoryID,
 		})
 	}
 	pageList := make([]store.Page, 0, len(pages))
@@ -177,25 +188,50 @@ func Export(job store.Job, pages []store.Page, boxesByPage map[int][]store.Box) 
 			PageIndex: p.PageIndex,
 		})
 		for _, b := range boxesByPage[p.PageIndex] {
-			px := b.BBoxPx75
-			if b.Edited || (px[2] == 0 && px[3] == 0) {
-				px = coords.BBoxPtToPx75(b.BBoxPt)
+			_, polyPx, _, bPx := coords.FillBoxPolys(b.PolygonPt, b.PolygonPx75, b.BBoxPt, b.BBoxPx75)
+			if b.Edited && len(b.PolygonPt) >= 3 {
+				polyPx = coords.PolyPtToPx75(b.PolygonPt)
+				bPx = coords.BBoxFromPoly(polyPx)
 			}
 			id := catID[b.Class]
 			if id == 0 {
 				id = 3
 			}
-			anns = append(anns, Annotation{
+			flat := coords.PolyToFlat(polyPx)
+			area := bPx[2] * bPx[3]
+			if len(polyPx) >= 3 {
+				area = polyArea(polyPx)
+			}
+			ann := Annotation{
 				ID:         annID,
 				ImageID:    p.PageIndex + 1,
 				CategoryID: id,
-				BBox:       []float64{px[0], px[1], px[2], px[3]},
-				Area:       px[2] * px[3],
+				BBox:       []float64{bPx[0], bPx[1], bPx[2], bPx[3]},
+				Area:       area,
 				PageIndex:  p.PageIndex,
 				PocClass:   b.Class,
-			})
+			}
+			if flat != nil {
+				ann.Segmentation = [][]float64{flat}
+			}
+			anns = append(anns, ann)
 			annID++
 		}
 	}
 	return json.MarshalIndent(File{Images: images, Categories: cats, Annotations: anns}, "", "  ")
+}
+
+func polyArea(poly [][2]float64) float64 {
+	if len(poly) < 3 {
+		return 0
+	}
+	sum := 0.0
+	for i := range poly {
+		j := (i + 1) % len(poly)
+		sum += poly[i][0]*poly[j][1] - poly[j][0]*poly[i][1]
+	}
+	if sum < 0 {
+		sum = -sum
+	}
+	return sum / 2
 }

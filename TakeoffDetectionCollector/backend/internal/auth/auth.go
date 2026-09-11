@@ -18,6 +18,11 @@ var (
 	ErrDomain       = errors.New("email domain not allowed")
 )
 
+// SessionTTL is how long a collector login lasts after Microsoft or Dev sign-in.
+// Microsoft access tokens are ~1h and the frontend then drops the Supabase
+// refresh session, so we mint our own token for this window.
+const SessionTTL = 7 * 24 * time.Hour
+
 type User struct {
 	ID    string `json:"id"`
 	Email string `json:"email"`
@@ -25,7 +30,8 @@ type User struct {
 }
 
 type Service struct {
-	cfg ConfigView
+	cfg  ConfigView
+	jwks *jwks
 }
 
 type ConfigView interface {
@@ -34,14 +40,21 @@ type ConfigView interface {
 	DevAuth() bool
 }
 
+// ProjectURLView is implemented by configs that know the Supabase project URL,
+// which is where asymmetric (ES256/RS256) signing keys are published.
+type ProjectURLView interface {
+	ProjectURL() string
+}
+
 type cfgAdapter struct{ c config.Config }
 
-func (a cfgAdapter) Domain() string    { return a.c.AllowedEmailDomain }
-func (a cfgAdapter) JWTSecret() string { return a.c.SupabaseJWTSecret }
-func (a cfgAdapter) DevAuth() bool     { return a.c.DevAuth }
+func (a cfgAdapter) Domain() string     { return a.c.AllowedEmailDomain }
+func (a cfgAdapter) JWTSecret() string  { return a.c.SupabaseJWTSecret }
+func (a cfgAdapter) DevAuth() bool      { return a.c.DevAuth }
+func (a cfgAdapter) ProjectURL() string { return a.c.SupabaseURL }
 
 func New(c config.Config) *Service {
-	return &Service{cfg: cfgAdapter{c}}
+	return &Service{cfg: cfgAdapter{c}, jwks: newJWKS(c.SupabaseURL)}
 }
 
 func (s *Service) DevEnabled() bool { return s.cfg.DevAuth() }
@@ -68,20 +81,48 @@ func (s *Service) FromRequest(r *http.Request) (User, error) {
 			return u, nil
 		}
 	}
-	if s.cfg.JWTSecret() == "" {
+	if s.cfg.JWTSecret() == "" && s.signingKeys() == nil {
 		return User{}, ErrUnauthorized
 	}
 	return s.parseSupabase(raw)
 }
 
+// signingKeys returns the JWKS client, lazily built when the config knows the
+// project URL but the service was constructed without one (e.g. in tests).
+func (s *Service) signingKeys() *jwks {
+	if s.jwks != nil {
+		return s.jwks
+	}
+	if v, ok := s.cfg.(ProjectURLView); ok {
+		s.jwks = newJWKS(v.ProjectURL())
+	}
+	return s.jwks
+}
+
+// verificationKey picks the key for the token's algorithm: the legacy shared
+// secret for HS256, or the project's published JWKS key for ES256/RS256.
+func (s *Service) verificationKey(t *jwt.Token) (any, error) {
+	switch t.Method.(type) {
+	case *jwt.SigningMethodHMAC:
+		secret := s.cfg.JWTSecret()
+		if secret == "" {
+			return nil, fmt.Errorf("no jwt secret configured")
+		}
+		return []byte(secret), nil
+	case *jwt.SigningMethodECDSA, *jwt.SigningMethodRSA:
+		kid, _ := t.Header["kid"].(string)
+		if kid == "" {
+			return nil, fmt.Errorf("token has no kid")
+		}
+		return s.signingKeys().keyByID(kid)
+	default:
+		return nil, fmt.Errorf("unexpected signing method %s", t.Method.Alg())
+	}
+}
+
 func (s *Service) parseSupabase(token string) (User, error) {
 	claims := jwt.MapClaims{}
-	parsed, err := jwt.ParseWithClaims(token, claims, func(t *jwt.Token) (any, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method")
-		}
-		return []byte(s.cfg.JWTSecret()), nil
-	})
+	parsed, err := jwt.ParseWithClaims(token, claims, s.verificationKey)
 	if err != nil || !parsed.Valid {
 		return User{}, ErrUnauthorized
 	}
@@ -138,9 +179,27 @@ func IssueDevToken(u User) string {
 		ID:    u.ID,
 		Email: u.Email,
 		Name:  u.Name,
-		Exp:   time.Now().Add(12 * time.Hour).Unix(),
+		Exp:   time.Now().Add(SessionTTL).Unix(),
 	})
 	return "dev." + string(b)
+}
+
+// IssueSessionToken mints an HS256 collector JWT valid for SessionTTL. Used
+// after a short-lived Supabase access token has already been verified.
+func (s *Service) IssueSessionToken(u User) (string, error) {
+	secret := s.cfg.JWTSecret()
+	if secret == "" {
+		return "", fmt.Errorf("no jwt secret configured")
+	}
+	now := time.Now()
+	t := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub":   u.ID,
+		"email": u.Email,
+		"name":  u.Name,
+		"iat":   now.Unix(),
+		"exp":   now.Add(SessionTTL).Unix(),
+	})
+	return t.SignedString([]byte(secret))
 }
 
 func parseDevToken(raw string) (User, bool) {

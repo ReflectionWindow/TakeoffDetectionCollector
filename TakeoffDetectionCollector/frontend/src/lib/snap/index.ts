@@ -5,10 +5,32 @@
  */
 
 export { bakeGeometryIndex } from "./bake";
+export {
+  FULL_OVERLAY_VIEW,
+  geometryHasOverlay,
+  shouldShowVectorOverlay,
+  VECTOR_OVERLAY_COLOR,
+  VECTOR_OVERLAY_MIN_ZOOM,
+  overlayViewRect,
+  vectorOverlayPaths,
+  activeSnapMark,
+  type ActiveSnapMark,
+} from "./overlay";
 export { suggestDimLength, dimTextsNear } from "./dimSuggest";
 export type { DimSuggestion } from "./dimSuggest";
 export { lockFromHit, lockedSegmentId, isSegmentAllowed } from "./lock";
 export { cursorNearLinework, querySnap, snapAndLock } from "./query";
+export {
+  applyCorner,
+  cornerOfHandle,
+  DEFAULT_ADJUST_SNAP,
+  LINE_SNAP_MODES,
+  POINT_SNAP_MODES,
+  queryAdjustSnap,
+  queryPointSnap,
+  snapRectByPoint,
+  type AdjustSnap,
+} from "./pointSnap";
 export {
   AUTO_SNAP_BAND_PX,
   AUTO_SNAP_MAX_SEG_TO_EDGE,
@@ -45,6 +67,7 @@ export {
   ALL_SNAP_MODES,
   SNAP_PRIORITY,
   type DimTextPng,
+  type FillPoly,
   type GeometryIndex,
   type LockState,
   type Point,

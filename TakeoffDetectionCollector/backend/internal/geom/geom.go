@@ -31,23 +31,23 @@ type Segments struct {
 }
 
 type Stats struct {
-	RawPathCount          int  `json:"raw_path_count"`
-	ReturnedSegmentCount  int  `json:"returned_segment_count"`
-	Truncated             bool `json:"truncated"`
-	DroppedShort          int  `json:"dropped_short"`
-	DroppedFillOnly       int  `json:"dropped_fill_only"`
-	DroppedHatch          int  `json:"dropped_hatch"`
-	DroppedOutside        int  `json:"dropped_outside"`
-	CurvesAsChords        int  `json:"curves_as_chords"`
-	FillCount             int  `json:"fill_count"`
-	PointCount            int  `json:"point_count"`
+	RawPathCount         int  `json:"raw_path_count"`
+	ReturnedSegmentCount int  `json:"returned_segment_count"`
+	Truncated            bool `json:"truncated"`
+	DroppedShort         int  `json:"dropped_short"`
+	DroppedFillOnly      int  `json:"dropped_fill_only"`
+	DroppedHatch         int  `json:"dropped_hatch"`
+	DroppedOutside       int  `json:"dropped_outside"`
+	CurvesAsChords       int  `json:"curves_as_chords"`
+	FillCount            int  `json:"fill_count"`
+	PointCount           int  `json:"point_count"`
 }
 
 const (
-	minLen        = 0.4
-	maxSegments   = 12000
-	pageFillFrac  = 0.25
-	skinnyThick   = 16.0
+	minLen       = 0.4
+	maxSegments  = 12000
+	pageFillFrac = 0.25
+	skinnyThick  = 16.0
 )
 
 // ExtractPage walks PDF content streams for one 0-based page.
@@ -84,9 +84,24 @@ type pdfPage struct {
 
 var (
 	mediaBoxRe = regexp.MustCompile(`/MediaBox\s*\[\s*([0-9.-]+)\s+([0-9.-]+)\s+([0-9.-]+)\s+([0-9.-]+)\s*\]`)
+	cropBoxRe  = regexp.MustCompile(`/CropBox\s*\[\s*([0-9.-]+)\s+([0-9.-]+)\s+([0-9.-]+)\s+([0-9.-]+)\s*\]`)
+	rotateRe   = regexp.MustCompile(`/Rotate\s+(-?\d+)`)
 	streamRe   = regexp.MustCompile(`(?s)stream\r?\n(.*?)endstream`)
 	pageObjRe  = regexp.MustCompile(`/Type\s*/Page[^s]`)
 )
+
+func boxWH(m [][]byte) (w, h float64, ok bool) {
+	if len(m) != 5 {
+		return 0, 0, false
+	}
+	x0, _ := strconv.ParseFloat(string(m[1]), 64)
+	y0, _ := strconv.ParseFloat(string(m[2]), 64)
+	x1, _ := strconv.ParseFloat(string(m[3]), 64)
+	y1, _ := strconv.ParseFloat(string(m[4]), 64)
+	w = math.Abs(x1 - x0)
+	h = math.Abs(y1 - y0)
+	return w, h, w > 0 && h > 0
+}
 
 func splitPages(pdf []byte) ([]pdfPage, error) {
 	// Prefer explicit page objects; fall back to every stream if none found.
@@ -96,14 +111,18 @@ func splitPages(pdf []byte) ([]pdfPage, error) {
 		if !pageObjRe.Match(obj) {
 			continue
 		}
-		w, h := 612.0, 792.0
-		if m := mediaBoxRe.FindSubmatch(obj); len(m) == 5 {
-			x0, _ := strconv.ParseFloat(string(m[1]), 64)
-			y0, _ := strconv.ParseFloat(string(m[2]), 64)
-			x1, _ := strconv.ParseFloat(string(m[3]), 64)
-			y1, _ := strconv.ParseFloat(string(m[4]), 64)
-			w = math.Abs(x1 - x0)
-			h = math.Abs(y1 - y0)
+		w, h := 0.0, 0.0
+		if m := cropBoxRe.FindSubmatch(obj); len(m) == 5 {
+			w, h, _ = boxWH(m)
+		} else if m := mediaBoxRe.FindSubmatch(obj); len(m) == 5 {
+			w, h, _ = boxWH(m)
+		}
+		if rot := rotateRe.FindSubmatch(obj); len(rot) == 2 {
+			r, _ := strconv.Atoi(string(rot[1]))
+			r = ((r % 360) + 360) % 360
+			if r == 90 || r == 270 {
+				w, h = h, w
+			}
 		}
 		var content []byte
 		for _, sm := range streamRe.FindAllSubmatch(obj, -1) {
@@ -116,13 +135,15 @@ func splitPages(pdf []byte) ([]pdfPage, error) {
 		return pages, nil
 	}
 	// Flattened / single-object drawings: treat each inflated stream as a page.
-	if m := mediaBoxRe.FindSubmatch(pdf); len(m) == 5 {
-		x0, _ := strconv.ParseFloat(string(m[1]), 64)
-		y0, _ := strconv.ParseFloat(string(m[2]), 64)
-		x1, _ := strconv.ParseFloat(string(m[3]), 64)
-		y1, _ := strconv.ParseFloat(string(m[4]), 64)
-		w := math.Abs(x1 - x0)
-		h := math.Abs(y1 - y0)
+	m := cropBoxRe.FindSubmatch(pdf)
+	if len(m) != 5 {
+		m = mediaBoxRe.FindSubmatch(pdf)
+	}
+	if len(m) == 5 {
+		w, h, ok := boxWH(m)
+		if !ok {
+			return nil, nil
+		}
 		var all []byte
 		for _, sm := range streamRe.FindAllSubmatch(pdf, -1) {
 			all = append(all, inflateMaybe(sm[1])...)

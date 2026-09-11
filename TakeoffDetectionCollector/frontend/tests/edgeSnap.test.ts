@@ -65,10 +65,17 @@ function indexFromLines(lines: number[][]): GeometryIndex {
 }
 
 function box(partial: Partial<Box> & { box_id: string; x1: number; y1: number; x2: number; y2: number }): Box {
+  const { x1, y1, x2, y2 } = partial;
   return {
     category_id: 1,
     origin: "model",
     edited: false,
+    points: [
+      { x: x1, y: y1 },
+      { x: x2, y: y1 },
+      { x: x2, y: y2 },
+      { x: x1, y: y2 },
+    ],
     ...partial,
   };
 }

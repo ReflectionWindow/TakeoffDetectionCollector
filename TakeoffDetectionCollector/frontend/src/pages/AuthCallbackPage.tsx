@@ -30,7 +30,6 @@ async function completeSignIn(code: string) {
   }
   const auth = await loginWithSupabase(accessToken);
   setToken(auth.token);
-  await signOutSupabase();
   return { ok: true as const };
 }
 

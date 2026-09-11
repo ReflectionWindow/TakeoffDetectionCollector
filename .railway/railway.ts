@@ -1,16 +1,16 @@
 import {
   defineRailway,
   github,
+  preserve,
   project,
   service,
 } from "railway/iac";
 
 export default defineRailway(() => {
-  const collector = service("collector", {
+  const collector = service("TakeoffDetectionCollector", {
     source: github("ReflectionWindow/TakeoffDetectionCollector", {
       branch: "main",
       rootDirectory: "TakeoffDetectionCollector/backend",
-      checkSuites: true,
     }),
     build: {
       builder: "DOCKERFILE",
@@ -30,10 +30,17 @@ export default defineRailway(() => {
       CLAIM_TTL: "24h",
       DB_MAX_OPEN_CONNS: "16",
       DB_MAX_IDLE_CONNS: "8",
+      CORS_ORIGINS: "https://takeoff-detection-collector.vercel.app,https://*.vercel.app",
+      DATA_DIR: preserve(),
+      SUPABASE_URL: preserve(),
+      SUPABASE_ANON_KEY: preserve(),
+      SUPABASE_JWT_SECRET: preserve(),
+      SUPABASE_SERVICE_ROLE_KEY: preserve(),
+      SUPABASE_DB_URL: preserve(),
     },
   });
 
-  return project("TakeoffDetectionCollector", {
+  return project("DataHarvest", {
     resources: [collector],
   });
 });

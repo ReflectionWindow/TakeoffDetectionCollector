@@ -26,9 +26,13 @@ type Config struct {
 	DBConnMaxLifetime time.Duration
 	DBConnMaxIdleTime time.Duration
 	DBKeepAlive       time.Duration
+
+	IngestWorkers int
+	ClaimTTL      time.Duration
 }
 
 func Load() Config {
+	loadDotEnv()
 	cors := splitCSV(env("CORS_ORIGINS", "http://localhost:5173,http://localhost:4173"))
 	jwt := strings.TrimSpace(os.Getenv("SUPABASE_JWT_SECRET"))
 	db := strings.TrimSpace(os.Getenv("SUPABASE_DB_URL"))
@@ -42,13 +46,54 @@ func Load() Config {
 		SupabaseServiceRole: strings.TrimSpace(os.Getenv("SUPABASE_SERVICE_ROLE_KEY")),
 		SupabaseDBURL:       db,
 		DataDir:             env("DATA_DIR", "./data"),
-		DevAuth:             jwt == "",
+		// JWT unset => Dev sign-in. DEV_AUTH=true keeps it on next to Supabase.
+		DevAuth: jwt == "" || truthy(os.Getenv("DEV_AUTH")),
 
 		DBMaxOpenConns:    IntEnv("DB_MAX_OPEN_CONNS", 16),
 		DBMaxIdleConns:    IntEnv("DB_MAX_IDLE_CONNS", 8),
 		DBConnMaxLifetime: DurationEnv("DB_CONN_MAX_LIFETIME", time.Hour),
 		DBConnMaxIdleTime: DurationEnv("DB_CONN_MAX_IDLE_TIME", 30*time.Minute),
 		DBKeepAlive:       DurationEnv("DB_KEEPALIVE", time.Minute),
+
+		IngestWorkers: IntEnv("INGEST_WORKERS", 16),
+		ClaimTTL:      DurationEnv("CLAIM_TTL", 24*time.Hour),
+	}
+}
+
+func loadDotEnv() {
+	for _, path := range []string{".env", "backend/.env", "TakeoffDetectionCollector/backend/.env"} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			key, val, ok := strings.Cut(line, "=")
+			if !ok {
+				continue
+			}
+			key = strings.TrimSpace(key)
+			if key == "" {
+				continue
+			}
+			if _, exists := os.LookupEnv(key); exists {
+				continue
+			}
+			os.Setenv(key, strings.TrimSpace(val))
+		}
+		return
+	}
+}
+
+func truthy(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
 	}
 }
 

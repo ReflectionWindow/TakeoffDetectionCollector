@@ -34,6 +34,51 @@ export function normalizeRegion(
   return clamped;
 }
 
+/** Translate a region in normalized page space, keeping it on the sheet. */
+export function translateRegion(r: BlackoutRegion, dx: number, dy: number): BlackoutRegion {
+  const w = r.x2 - r.x1;
+  const h = r.y2 - r.y1;
+  let x1 = r.x1 + dx;
+  let y1 = r.y1 + dy;
+  if (x1 < 0) x1 = 0;
+  if (y1 < 0) y1 = 0;
+  if (x1 + w > 1) x1 = 1 - w;
+  if (y1 + h > 1) y1 = 1 - h;
+  return { x1, y1, x2: x1 + w, y2: y1 + h };
+}
+
+export function regionToRect(r: BlackoutRegion, width: number, height: number): {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+} {
+  return {
+    x1: r.x1 * width,
+    y1: r.y1 * height,
+    x2: r.x2 * width,
+    y2: r.y2 * height,
+  };
+}
+
+/** Top-most blackout under a point in image pixels, or -1. */
+export function hitRegionIndex(
+  p: { x: number; y: number },
+  regions: BlackoutRegion[],
+  width: number,
+  height: number,
+): number {
+  for (let i = regions.length - 1; i >= 0; i--) {
+    const r = regions[i]!;
+    const x1 = r.x1 * width;
+    const y1 = r.y1 * height;
+    const x2 = r.x2 * width;
+    const y2 = r.y2 * height;
+    if (p.x >= x1 && p.x <= x2 && p.y >= y1 && p.y <= y2) return i;
+  }
+  return -1;
+}
+
 /** Drop empty pages; keep only pages in `selectedPages` (order preserved). */
 export function compactPageBlackouts(
   blackouts: PageBlackout[],

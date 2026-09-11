@@ -19,6 +19,7 @@ type Blob interface {
 	Put(key string, data []byte, contentType string) error
 	Get(key string) ([]byte, error)
 	Exists(key string) bool
+	Delete(key string) error
 }
 
 type Memory struct {
@@ -55,6 +56,13 @@ func (m *Memory) Exists(key string) bool {
 	return ok
 }
 
+func (m *Memory) Delete(key string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.data, key)
+	return nil
+}
+
 type Disk struct {
 	root string
 }
@@ -88,6 +96,14 @@ func (d *Disk) Exists(key string) bool {
 	return err == nil
 }
 
+func (d *Disk) Delete(key string) error {
+	err := os.Remove(d.path(key))
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 // Supabase talks to Storage REST when service-role is configured.
 type Supabase struct {
 	base   string
@@ -95,6 +111,8 @@ type Supabase struct {
 	client *http.Client
 	local  Blob
 }
+
+var requiredBuckets = []string{"pdfs", "coco", "annotations", "rasters", "vectors"}
 
 func NewSupabase(cfg config.Config, fallback Blob) Blob {
 	if cfg.SupabaseURL == "" || cfg.SupabaseServiceRole == "" {
@@ -106,6 +124,38 @@ func NewSupabase(cfg config.Config, fallback Blob) Blob {
 		client: &http.Client{},
 		local:  fallback,
 	}
+}
+
+func (s *Supabase) bucketAPI() string {
+	return strings.TrimSuffix(s.base, "/object") + "/bucket"
+}
+
+func (s *Supabase) EnsureBuckets() error {
+	for _, name := range requiredBuckets {
+		payload := []byte(`{"id":"` + name + `","name":"` + name + `","public":false}`)
+		req, err := http.NewRequest(http.MethodPost, s.bucketAPI(), bytes.NewReader(payload))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+s.key)
+		req.Header.Set("apikey", s.key)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := s.client.Do(req)
+		if err != nil {
+			return fmt.Errorf("create bucket %s: %w", name, err)
+		}
+		respBody, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusConflict {
+			continue
+		}
+		msg := strings.ToLower(string(respBody))
+		if strings.Contains(msg, "already exist") || strings.Contains(msg, "duplicate") {
+			continue
+		}
+		return fmt.Errorf("create bucket %s: %s %s", name, resp.Status, respBody)
+	}
+	return nil
 }
 
 func (s *Supabase) Put(key string, data []byte, contentType string) error {
@@ -166,6 +216,31 @@ func (s *Supabase) Exists(key string) bool {
 	return err == nil
 }
 
+func (s *Supabase) Delete(key string) error {
+	_ = s.local.Delete(key)
+	bucket, object := splitKey(key)
+	if bucket == "" || object == "" {
+		return nil
+	}
+	url := s.base + "/" + bucket + "/" + object
+	req, err := http.NewRequest(http.MethodDelete, url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+s.key)
+	req.Header.Set("apikey", s.key)
+	resp, err := s.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 && resp.StatusCode != http.StatusNotFound {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("storage delete %s: %s %s", key, resp.Status, body)
+	}
+	return nil
+}
+
 func splitKey(key string) (bucket, object string) {
 	key = strings.TrimPrefix(key, "/")
 	i := strings.IndexByte(key, '/')
@@ -185,5 +260,11 @@ func Open(cfg config.Config) (Blob, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewSupabase(cfg, disk), nil
+	blob := NewSupabase(cfg, disk)
+	if s, ok := blob.(*Supabase); ok {
+		if err := s.EnsureBuckets(); err != nil {
+			return nil, err
+		}
+	}
+	return blob, nil
 }

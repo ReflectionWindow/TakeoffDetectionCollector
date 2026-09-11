@@ -49,5 +49,13 @@ export async function signInWithMicrosoft(): Promise<void> {
       queryParams: { prompt: "select_account" },
     },
   });
-  if (error) throw error;
+  if (error) {
+    const msg = error.message || String(error);
+    if (/provider is not enabled|unsupported provider/i.test(msg)) {
+      throw new Error(
+        "Microsoft (Azure) is not enabled on this Supabase project. Use Dev sign-in, or turn on Authentication → Providers → Azure in the Supabase dashboard.",
+      );
+    }
+    throw error;
+  }
 }

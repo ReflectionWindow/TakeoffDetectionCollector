@@ -2,7 +2,10 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +21,8 @@ type Memory struct {
 	payloads  map[string]AnnotationPayload
 	blackouts map[string][]blackout.Region
 	docs      map[string]string
+	tags      map[string]Tag
+	comments  map[string]PageComment
 }
 
 func NewMemory() *Memory {
@@ -29,6 +34,8 @@ func NewMemory() *Memory {
 		payloads:  map[string]AnnotationPayload{},
 		blackouts: map[string][]blackout.Region{},
 		docs:      map[string]string{},
+		tags:      map[string]Tag{},
+		comments:  map[string]PageComment{},
 	}
 }
 
@@ -51,8 +58,14 @@ func (m *Memory) UpsertJob(_ context.Context, job Job) (Job, error) {
 	now := time.Now().UTC()
 	if existing, ok := m.jobs[job.ID]; ok {
 		job.CreatedAt = existing.CreatedAt
+		if job.Tags == nil {
+			job.Tags = copyTags(existing.Tags)
+		}
 	} else if job.CreatedAt.IsZero() {
 		job.CreatedAt = now
+	}
+	if job.Tags == nil {
+		job.Tags = []string{}
 	}
 	job.UpdatedAt = now
 	m.jobs[job.ID] = job
@@ -80,21 +93,109 @@ func (m *Memory) GetJobBySlug(_ context.Context, slug string) (Job, error) {
 	return m.withCounts(m.jobs[id]), nil
 }
 
-func (m *Memory) ListJobs(_ context.Context) ([]Job, error) {
+func (m *Memory) ListJobs(_ context.Context, q JobListQuery) (JobList, error) {
+	q = q.Normalized()
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	out := make([]Job, 0, len(m.jobs))
+	all := make([]Job, 0, len(m.jobs))
 	for _, j := range m.jobs {
-		out = append(out, m.withCounts(j))
+		all = append(all, m.withCounts(j))
 	}
-	return out, nil
+	sort.Slice(all, func(i, j int) bool { return all[i].Slug < all[j].Slug })
+
+	var counts StageCounts
+	tagN := map[string]int{}
+	tagName := map[string]string{}
+	matched := make([]Job, 0, len(all))
+	for _, job := range all {
+		st := NormalizeStatus(job.Status)
+		if jobMatchesTags(job, q.Tags) {
+			counts.All++
+			switch st {
+			case StatusCorrected:
+				counts.Corrected++
+			case StatusComplete:
+				counts.Complete++
+			default:
+				counts.Original++
+			}
+		}
+		if q.Stage == "" || st == q.Stage {
+			seen := map[string]struct{}{}
+			for _, name := range job.Tags {
+				key := strings.ToLower(name)
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				seen[key] = struct{}{}
+				tagN[key]++
+				if _, ok := tagName[key]; !ok {
+					tagName[key] = name
+				}
+			}
+		}
+		if jobMatchesList(job, q) {
+			matched = append(matched, job)
+		}
+	}
+	total := len(matched)
+	if q.Offset > total {
+		q.Offset = total
+	}
+	end := q.Offset + q.Limit
+	if end > total {
+		end = total
+	}
+	page := matched[q.Offset:end]
+	tagCounts := make([]TagCount, 0, len(tagN))
+	for key, n := range tagN {
+		tagCounts = append(tagCounts, TagCount{Name: tagName[key], Count: n})
+	}
+	sort.Slice(tagCounts, func(i, j int) bool {
+		return strings.ToLower(tagCounts[i].Name) < strings.ToLower(tagCounts[j].Name)
+	})
+	return JobList{Jobs: page, Total: total, Limit: q.Limit, Offset: q.Offset, Counts: counts, TagCounts: tagCounts}, nil
+}
+
+func (m *Memory) DeleteJob(_ context.Context, id string) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	job, ok := m.jobs[id]
+	if !ok {
+		return nil, fmt.Errorf("job not found")
+	}
+	delete(m.jobs, id)
+	delete(m.bySlug, job.Slug)
+	delete(m.docs, id)
+	for key, p := range m.pages {
+		if p.JobID == id {
+			delete(m.pages, key)
+			delete(m.revisions, pageKey(id, p.PageIndex))
+			delete(m.blackouts, pageKey(id, p.PageIndex))
+		}
+	}
+	for key := range m.payloads {
+		if strings.HasPrefix(key, id+":") {
+			delete(m.payloads, key)
+		}
+	}
+	for cid, c := range m.comments {
+		if c.JobID == id {
+			delete(m.comments, cid)
+		}
+	}
+	return nil, nil
 }
 
 func (m *Memory) UpdateJob(_ context.Context, job Job) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.jobs[job.ID]; !ok {
+	existing, ok := m.jobs[job.ID]
+	if !ok {
 		return fmt.Errorf("job not found")
+	}
+	if job.Tags == nil {
+		job.Tags = copyTags(existing.Tags)
 	}
 	job.UpdatedAt = time.Now().UTC()
 	m.jobs[job.ID] = job
@@ -120,13 +221,18 @@ func (m *Memory) withCounts(job Job) Job {
 	job.PageCount = n
 	job.BoxCount = boxes
 	_, job.HasPDF = m.docs[job.ID]
-	if job.HasPDF && (job.Status == StatusImported || job.Status == StatusAwaitingPDF) {
-		job.Status = StatusReady
-	}
-	if !job.HasPDF && job.Status == StatusImported {
-		job.Status = StatusAwaitingPDF
-	}
+	job.Status = NormalizeStatus(job.Status)
+	job.Tags = copyTags(job.Tags)
 	return job
+}
+
+func copyTags(in []string) []string {
+	if len(in) == 0 {
+		return []string{}
+	}
+	out := make([]string, len(in))
+	copy(out, in)
+	return out
 }
 
 func (m *Memory) UpsertPage(_ context.Context, page Page) error {
@@ -171,7 +277,7 @@ func (m *Memory) SetDocument(_ context.Context, jobID, storageKey, sha256 string
 	_ = pageCount
 	m.docs[jobID] = storageKey
 	if job, ok := m.jobs[jobID]; ok {
-		job.Status = StatusReady
+		job.Status = NormalizeStatus(job.Status)
 		job.UpdatedAt = time.Now().UTC()
 		m.jobs[jobID] = job
 	}
@@ -231,4 +337,237 @@ func (m *Memory) GetBlackouts(_ context.Context, jobID string, page int) ([]blac
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return append([]blackout.Region{}, m.blackouts[pageKey(jobID, page)]...), nil
+}
+
+func (m *Memory) takeJobLocked(id string) (Job, error) {
+	job, ok := m.jobs[id]
+	if !ok {
+		return Job{}, fmt.Errorf("job not found")
+	}
+	return job, nil
+}
+
+func (m *Memory) putClaim(job Job, userID, email string, ttl time.Duration) Job {
+	exp := time.Now().UTC().Add(ttl)
+	job.ClaimedBy = userID
+	job.ClaimedEmail = email
+	job.ClaimExpiresAt = &exp
+	job.UpdatedAt = time.Now().UTC()
+	m.jobs[job.ID] = job
+	return m.withCounts(job)
+}
+
+func (m *Memory) ClaimJob(_ context.Context, jobID, userID, email string, ttl time.Duration) (Job, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	job, err := m.takeJobLocked(jobID)
+	if err != nil {
+		return Job{}, err
+	}
+	job = m.withCounts(job)
+	if !job.ClaimableBy(userID, time.Now().UTC()) {
+		return Job{}, fmt.Errorf("job claimed by %s", job.ClaimedEmail)
+	}
+	return m.putClaim(job, userID, email, ttl), nil
+}
+
+func (m *Memory) HeartbeatJob(_ context.Context, jobID, userID string, ttl time.Duration) (Job, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	job, err := m.takeJobLocked(jobID)
+	if err != nil {
+		return Job{}, err
+	}
+	job = m.withCounts(job)
+	if !job.HeldBy(userID, time.Now().UTC()) {
+		return Job{}, fmt.Errorf("not the claimant")
+	}
+	return m.putClaim(job, userID, job.ClaimedEmail, ttl), nil
+}
+
+func (m *Memory) ReleaseJob(_ context.Context, jobID, userID string) (Job, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	job, err := m.takeJobLocked(jobID)
+	if err != nil {
+		return Job{}, err
+	}
+	job = m.withCounts(job)
+	if job.ClaimedBy != "" && job.ClaimedBy != userID && job.ClaimActive(time.Now().UTC()) {
+		return Job{}, fmt.Errorf("not the claimant")
+	}
+	job.ClaimedBy = ""
+	job.ClaimedEmail = ""
+	job.ClaimExpiresAt = nil
+	job.UpdatedAt = time.Now().UTC()
+	m.jobs[job.ID] = job
+	return m.withCounts(job), nil
+}
+
+func (m *Memory) ClaimNext(_ context.Context, userID, email string, stage JobStatus, ttl time.Duration) (Job, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now().UTC()
+	stage = NormalizeStatus(stage)
+	var pick *Job
+	for _, raw := range m.jobs {
+		job := m.withCounts(raw)
+		if NormalizeStatus(job.Status) != stage || !job.HasPDF {
+			continue
+		}
+		if !job.ClaimableBy(userID, now) {
+			continue
+		}
+		if pick == nil || job.UpdatedAt.Before(pick.UpdatedAt) {
+			copy := job
+			pick = &copy
+		}
+	}
+	if pick == nil {
+		return Job{}, fmt.Errorf("no available job")
+	}
+	return m.putClaim(*pick, userID, email, ttl), nil
+}
+
+func (m *Memory) SetStage(_ context.Context, jobID, userID, email string, stage JobStatus) (Job, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	job, err := m.takeJobLocked(jobID)
+	if err != nil {
+		return Job{}, err
+	}
+	job = m.withCounts(job)
+	if err := ValidateStage(job, userID, stage); err != nil {
+		return Job{}, err
+	}
+	job.Status = NormalizeStatus(stage)
+	switch job.Status {
+	case StatusCorrected:
+		job.CorrectedBy = userID
+		job.CorrectedEmail = email
+		job.VerifiedBy = ""
+		job.VerifiedEmail = ""
+	case StatusOriginal:
+		job.CorrectedBy = ""
+		job.CorrectedEmail = ""
+		job.VerifiedBy = ""
+		job.VerifiedEmail = ""
+	case StatusComplete:
+		job.VerifiedBy = userID
+		job.VerifiedEmail = email
+	}
+	job.UpdatedAt = time.Now().UTC()
+	m.jobs[job.ID] = job
+	return m.withCounts(job), nil
+}
+
+func (m *Memory) ListTags(_ context.Context) ([]Tag, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]Tag, 0, len(m.tags))
+	for _, tag := range m.tags {
+		out = append(out, tag)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		li, lj := strings.ToLower(out[i].Name), strings.ToLower(out[j].Name)
+		if li == lj {
+			return out[i].Name < out[j].Name
+		}
+		return li < lj
+	})
+	return out, nil
+}
+
+func (m *Memory) SetJobTags(_ context.Context, jobID string, names []string) (Job, error) {
+	normalized, err := NormalizeTagNames(names)
+	if err != nil {
+		return Job{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	job, err := m.takeJobLocked(jobID)
+	if err != nil {
+		return Job{}, err
+	}
+	canonical := make([]string, 0, len(normalized))
+	for _, name := range normalized {
+		key := strings.ToLower(name)
+		if existing, ok := m.tags[key]; ok {
+			canonical = append(canonical, existing.Name)
+			continue
+		}
+		tag := Tag{ID: fmt.Sprintf("tag_%d", len(m.tags)+1), Name: name}
+		m.tags[key] = tag
+		canonical = append(canonical, name)
+	}
+	job.Tags = canonical
+	job.UpdatedAt = time.Now().UTC()
+	m.jobs[job.ID] = job
+	return m.withCounts(job), nil
+}
+
+func (m *Memory) ListPageComments(_ context.Context, jobID string, pageIndex int) ([]PageComment, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if _, ok := m.jobs[jobID]; !ok {
+		return nil, fmt.Errorf("job not found")
+	}
+	out := make([]PageComment, 0)
+	for _, c := range m.comments {
+		if c.JobID == jobID && c.PageIndex == pageIndex {
+			out = append(out, c)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
+	return out, nil
+}
+
+func (m *Memory) CreatePageComment(_ context.Context, comment PageComment) (PageComment, error) {
+	if err := NormalizePageComment(&comment); err != nil {
+		return PageComment{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.jobs[comment.JobID]; !ok {
+		return PageComment{}, fmt.Errorf("job not found")
+	}
+	now := time.Now().UTC()
+	if comment.ID == "" {
+		comment.ID = newCommentID()
+	}
+	if comment.CreatedAt.IsZero() {
+		comment.CreatedAt = now
+	}
+	comment.UpdatedAt = now
+	m.comments[comment.ID] = comment
+	return comment, nil
+}
+
+func (m *Memory) DeletePageComment(_ context.Context, jobID, commentID, userID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.comments[commentID]
+	if !ok || c.JobID != jobID {
+		return fmt.Errorf("comment not found")
+	}
+	if c.AuthorID != userID {
+		return fmt.Errorf("not the author")
+	}
+	delete(m.comments, commentID)
+	return nil
+}
+
+func newCommentID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("cmt_%d", time.Now().UnixNano())
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
