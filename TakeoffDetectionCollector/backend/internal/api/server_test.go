@@ -340,3 +340,201 @@ func TestListJobsPagedAndDelete(t *testing.T) {
 		t.Fatalf("after delete %#v", page)
 	}
 }
+
+func markupPDF() []byte {
+	return []byte(
+		"%PDF-1.1\n" +
+			"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n" +
+			"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n" +
+			"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Annots[4 0 R 5 0 R]>>endobj\n" +
+			"4 0 obj<</Type/Annot/Subtype/Polygon/Contents(CW)/Vertices[100 100 200 100 200 200 100 200]>>endobj\n" +
+			"5 0 obj<</Type/Annot/Subtype/Polygon/Contents(NOPE)/Vertices[1 1 2 1 2 2]>>endobj\n" +
+			"trailer<</Root 1 0 R>>\n%%EOF\n",
+	)
+}
+
+func TestImportJobsProjectsAndSearch(t *testing.T) {
+	cfg := config.Config{
+		CORSOrigins:        []string{"http://localhost:5173"},
+		AllowedEmailDomain: "reflectionwindow.com",
+		DevAuth:            true,
+	}
+	s := New(cfg, store.NewMemory(), storage.NewMemory())
+	h := s.Handler()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/dev", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("dev auth %d %s", w.Code, w.Body.String())
+	}
+	var auth struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&auth); err != nil || auth.Token == "" {
+		t.Fatal(auth)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/projects", nil)
+	req.Header.Set("Authorization", "Bearer "+auth.Token)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("projects %d %s", w.Code, w.Body.String())
+	}
+	var catalog struct {
+		Projects     []store.Project `json:"projects"`
+		RootJobCount int             `json:"root_job_count"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&catalog); err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog.Projects) != 2 {
+		t.Fatalf("seeded projects %#v", catalog.Projects)
+	}
+	var chicago string
+	for _, p := range catalog.Projects {
+		if p.Slug == "chicago" {
+			chicago = p.ID
+		}
+	}
+	if chicago == "" {
+		t.Fatal("chicago missing")
+	}
+
+	body := &bytes.Buffer{}
+	mw := multipart.NewWriter(body)
+	fw, err := mw.CreateFormFile("files", "UIH_ELEVATION.pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fw.Write(markupPDF()); err != nil {
+		t.Fatal(err)
+	}
+	if err := mw.WriteField("project_id", chicago); err != nil {
+		t.Fatal(err)
+	}
+	mw.Close()
+	req = httptest.NewRequest(http.MethodPost, "/v1/imports/jobs", body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer "+auth.Token)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("import jobs %d %s", w.Code, w.Body.String())
+	}
+	var imported struct {
+		Imported int         `json:"imported"`
+		Skipped  int         `json:"skipped"`
+		Jobs     []store.Job `json:"jobs"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&imported); err != nil {
+		t.Fatal(err)
+	}
+	if imported.Imported != 1 || len(imported.Jobs) != 1 {
+		t.Fatalf("imported %#v", imported)
+	}
+	job := imported.Jobs[0]
+	if job.ProjectID != chicago || job.Slug != "UIH_ELEVATION" || !job.HasPDF {
+		t.Fatalf("job %#v", job)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/jobs/"+job.ID+"/pages/0/annotations", nil)
+	req.Header.Set("Authorization", "Bearer "+auth.Token)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("annotations %d %s", w.Code, w.Body.String())
+	}
+	var payload struct {
+		Payload store.AnnotationPayload `json:"payload"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Payload.Boxes) != 1 || payload.Payload.Boxes[0].Class != "CW" {
+		t.Fatalf("boxes %#v", payload.Payload.Boxes)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/jobs?q=UIH", nil)
+	req.Header.Set("Authorization", "Bearer "+auth.Token)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("search %d %s", w.Code, w.Body.String())
+	}
+	var list store.JobList
+	if err := json.NewDecoder(w.Body).Decode(&list); err != nil {
+		t.Fatal(err)
+	}
+	if list.Total != 1 || list.Jobs[0].ID != job.ID {
+		t.Fatalf("search %#v", list)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/jobs?project="+chicago, nil)
+	req.Header.Set("Authorization", "Bearer "+auth.Token)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("chicago list %d %s", w.Code, w.Body.String())
+	}
+	if err := json.NewDecoder(w.Body).Decode(&list); err != nil {
+		t.Fatal(err)
+	}
+	if list.Total != 1 {
+		t.Fatalf("chicago %#v", list)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/jobs?project=root", nil)
+	req.Header.Set("Authorization", "Bearer "+auth.Token)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if err := json.NewDecoder(w.Body).Decode(&list); err != nil {
+		t.Fatal(err)
+	}
+	if list.Total != 0 {
+		t.Fatalf("root should be empty %#v", list)
+	}
+
+	dup := &bytes.Buffer{}
+	mw = multipart.NewWriter(dup)
+	fw, err = mw.CreateFormFile("files", "UIH_ELEVATION.pdf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fw.Write(markupPDF()); err != nil {
+		t.Fatal(err)
+	}
+	if err := mw.WriteField("project_id", chicago); err != nil {
+		t.Fatal(err)
+	}
+	mw.Close()
+	req = httptest.NewRequest(http.MethodPost, "/v1/imports/jobs", dup)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer "+auth.Token)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("dup import %d %s", w.Code, w.Body.String())
+	}
+	var again struct {
+		Imported int              `json:"imported"`
+		Skipped  int              `json:"skipped"`
+		Errors   []jobImportError `json:"errors"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&again); err != nil {
+		t.Fatal(err)
+	}
+	if again.Imported != 0 || again.Skipped != 1 || len(again.Errors) != 1 {
+		t.Fatalf("dup %#v", again)
+	}
+
+	create := bytes.NewReader([]byte(`{"name":"Austin"}`))
+	req = httptest.NewRequest(http.MethodPost, "/v1/projects", create)
+	req.Header.Set("Authorization", "Bearer "+auth.Token)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("create project %d %s", w.Code, w.Body.String())
+	}
+}

@@ -28,6 +28,8 @@ type Job struct {
 	Slug           string     `json:"slug"`
 	Title          string     `json:"title"`
 	Status         JobStatus  `json:"status"`
+	ProjectID      string     `json:"project_id,omitempty"`
+	ProjectName    string     `json:"project_name,omitempty"`
 	SourceCocoKey  string     `json:"source_coco_key,omitempty"`
 	ConflictCount  int        `json:"conflict_count"`
 	PageCount      int        `json:"page_count"`
@@ -95,7 +97,7 @@ type Store interface {
 
 	UpsertJob(ctx context.Context, job Job) (Job, error)
 	GetJob(ctx context.Context, id string) (Job, error)
-	GetJobBySlug(ctx context.Context, slug string) (Job, error)
+	GetJobBySlug(ctx context.Context, projectID, slug string) (Job, error)
 	ListJobs(ctx context.Context, q JobListQuery) (JobList, error)
 	UpdateJob(ctx context.Context, job Job) error
 	// DeleteJob removes the job and cascaded rows in one transaction.
@@ -119,8 +121,13 @@ type Store interface {
 	ClaimJob(ctx context.Context, jobID, userID, email string, ttl time.Duration) (Job, error)
 	HeartbeatJob(ctx context.Context, jobID, userID string, ttl time.Duration) (Job, error)
 	ReleaseJob(ctx context.Context, jobID, userID string) (Job, error)
-	ClaimNext(ctx context.Context, userID, email string, stage JobStatus, ttl time.Duration) (Job, error)
+	ClaimNext(ctx context.Context, userID, email string, stage JobStatus, ttl time.Duration, project string) (Job, error)
 	SetStage(ctx context.Context, jobID, userID, email string, stage JobStatus) (Job, error)
+
+	ListProjects(ctx context.Context) ([]Project, int, error)
+	CreateProject(ctx context.Context, name string) (Project, error)
+	GetProject(ctx context.Context, id string) (Project, error)
+	GetProjectBySlug(ctx context.Context, slug string) (Project, error)
 
 	ListTags(ctx context.Context) ([]Tag, error)
 	SetJobTags(ctx context.Context, jobID string, names []string) (Job, error)

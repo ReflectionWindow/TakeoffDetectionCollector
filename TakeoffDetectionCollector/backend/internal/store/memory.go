@@ -16,6 +16,7 @@ type Memory struct {
 	mu        sync.RWMutex
 	jobs      map[string]Job
 	bySlug    map[string]string
+	projects  map[string]Project
 	pages     map[string]Page
 	revisions map[string][]Revision
 	payloads  map[string]AnnotationPayload
@@ -26,9 +27,14 @@ type Memory struct {
 }
 
 func NewMemory() *Memory {
+	now := time.Now().UTC()
 	return &Memory{
-		jobs:      map[string]Job{},
-		bySlug:    map[string]string{},
+		jobs:   map[string]Job{},
+		bySlug: map[string]string{},
+		projects: map[string]Project{
+			ProjectManilaID:  {ID: ProjectManilaID, Slug: ProjectManilaSlug, Name: "Manila", CreatedAt: now},
+			ProjectChicagoID: {ID: ProjectChicagoID, Slug: ProjectChicagoSlug, Name: "Chicago", CreatedAt: now},
+		},
 		pages:     map[string]Page{},
 		revisions: map[string][]Revision{},
 		payloads:  map[string]AnnotationPayload{},
@@ -61,15 +67,31 @@ func (m *Memory) UpsertJob(_ context.Context, job Job) (Job, error) {
 		if job.Tags == nil {
 			job.Tags = copyTags(existing.Tags)
 		}
+		if job.ProjectID == "" {
+			job.ProjectID = existing.ProjectID
+		}
+		oldKey := slugKey(existing.ProjectID, existing.Slug)
+		if oldKey != slugKey(job.ProjectID, job.Slug) {
+			delete(m.bySlug, oldKey)
+		}
 	} else if job.CreatedAt.IsZero() {
 		job.CreatedAt = now
+	}
+	key := slugKey(job.ProjectID, job.Slug)
+	if id, ok := m.bySlug[key]; ok && id != job.ID {
+		return Job{}, fmt.Errorf("job slug already exists")
 	}
 	if job.Tags == nil {
 		job.Tags = []string{}
 	}
+	if p, ok := m.projects[job.ProjectID]; ok {
+		job.ProjectName = p.Name
+	} else if job.ProjectID == "" {
+		job.ProjectName = ""
+	}
 	job.UpdatedAt = now
 	m.jobs[job.ID] = job
-	m.bySlug[job.Slug] = job.ID
+	m.bySlug[key] = job.ID
 	return job, nil
 }
 
@@ -83,10 +105,10 @@ func (m *Memory) GetJob(_ context.Context, id string) (Job, error) {
 	return m.withCounts(job), nil
 }
 
-func (m *Memory) GetJobBySlug(_ context.Context, slug string) (Job, error) {
+func (m *Memory) GetJobBySlug(_ context.Context, projectID, slug string) (Job, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	id, ok := m.bySlug[slug]
+	id, ok := m.bySlug[slugKey(projectID, slug)]
 	if !ok {
 		return Job{}, fmt.Errorf("job not found")
 	}
@@ -109,7 +131,7 @@ func (m *Memory) ListJobs(_ context.Context, q JobListQuery) (JobList, error) {
 	matched := make([]Job, 0, len(all))
 	for _, job := range all {
 		st := NormalizeStatus(job.Status)
-		if jobMatchesTags(job, q.Tags) {
+		if jobMatchesSearch(job, q) && jobMatchesTags(job, q.Tags) {
 			counts.All++
 			switch st {
 			case StatusCorrected:
@@ -120,7 +142,7 @@ func (m *Memory) ListJobs(_ context.Context, q JobListQuery) (JobList, error) {
 				counts.Original++
 			}
 		}
-		if q.Stage == "" || st == q.Stage {
+		if jobMatchesSearch(job, q) && (q.Stage == "" || st == q.Stage) {
 			seen := map[string]struct{}{}
 			for _, name := range job.Tags {
 				key := strings.ToLower(name)
@@ -165,7 +187,7 @@ func (m *Memory) DeleteJob(_ context.Context, id string) ([]string, error) {
 		return nil, fmt.Errorf("job not found")
 	}
 	delete(m.jobs, id)
-	delete(m.bySlug, job.Slug)
+	delete(m.bySlug, slugKey(job.ProjectID, job.Slug))
 	delete(m.docs, id)
 	for key, p := range m.pages {
 		if p.JobID == id {
@@ -223,6 +245,11 @@ func (m *Memory) withCounts(job Job) Job {
 	_, job.HasPDF = m.docs[job.ID]
 	job.Status = NormalizeStatus(job.Status)
 	job.Tags = copyTags(job.Tags)
+	if p, ok := m.projects[job.ProjectID]; ok {
+		job.ProjectName = p.Name
+	} else {
+		job.ProjectName = ""
+	}
 	return job
 }
 
@@ -403,15 +430,19 @@ func (m *Memory) ReleaseJob(_ context.Context, jobID, userID string) (Job, error
 	return m.withCounts(job), nil
 }
 
-func (m *Memory) ClaimNext(_ context.Context, userID, email string, stage JobStatus, ttl time.Duration) (Job, error) {
+func (m *Memory) ClaimNext(_ context.Context, userID, email string, stage JobStatus, ttl time.Duration, project string) (Job, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := time.Now().UTC()
 	stage = NormalizeStatus(stage)
+	project = NormalizeProjectScope(project)
 	var pick *Job
 	for _, raw := range m.jobs {
 		job := m.withCounts(raw)
 		if NormalizeStatus(job.Status) != stage || !job.HasPDF {
+			continue
+		}
+		if !jobMatchesProject(job, project) {
 			continue
 		}
 		if !job.ClaimableBy(userID, now) {
@@ -458,6 +489,77 @@ func (m *Memory) SetStage(_ context.Context, jobID, userID, email string, stage 
 	job.UpdatedAt = time.Now().UTC()
 	m.jobs[job.ID] = job
 	return m.withCounts(job), nil
+}
+
+func (m *Memory) ListProjects(_ context.Context) ([]Project, int, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	rootCount := 0
+	counts := map[string]int{}
+	for _, job := range m.jobs {
+		if job.ProjectID == "" {
+			rootCount++
+			continue
+		}
+		counts[job.ProjectID]++
+	}
+	out := make([]Project, 0, len(m.projects))
+	for _, p := range m.projects {
+		p.JobCount = counts[p.ID]
+		out = append(out, p)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		li, lj := strings.ToLower(out[i].Name), strings.ToLower(out[j].Name)
+		if li == lj {
+			return out[i].Slug < out[j].Slug
+		}
+		return li < lj
+	})
+	return out, rootCount, nil
+}
+
+func (m *Memory) CreateProject(_ context.Context, name string) (Project, error) {
+	name, slug, err := NormalizeProjectName(name)
+	if err != nil {
+		return Project{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, p := range m.projects {
+		if p.Slug == slug {
+			return Project{}, fmt.Errorf("project already exists")
+		}
+	}
+	p := Project{
+		ID:        newCommentID(),
+		Slug:      slug,
+		Name:      name,
+		CreatedAt: time.Now().UTC(),
+	}
+	m.projects[p.ID] = p
+	return p, nil
+}
+
+func (m *Memory) GetProject(_ context.Context, id string) (Project, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	p, ok := m.projects[id]
+	if !ok {
+		return Project{}, fmt.Errorf("project not found")
+	}
+	return p, nil
+}
+
+func (m *Memory) GetProjectBySlug(_ context.Context, slug string) (Project, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	slug = strings.ToLower(strings.TrimSpace(slug))
+	for _, p := range m.projects {
+		if p.Slug == slug {
+			return p, nil
+		}
+	}
+	return Project{}, fmt.Errorf("project not found")
 }
 
 func (m *Memory) ListTags(_ context.Context) ([]Tag, error) {

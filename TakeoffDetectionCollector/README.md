@@ -216,7 +216,7 @@ Copy values from the Supabase dashboard (Settings → API / Database). Never com
 ### 1. Supabase
 
 1. New project (not the takeoff-services prod project)
-2. SQL editor: run every file in `supabase/migrations/` in order (`001` through `007`)
+2. SQL editor: run every file in `supabase/migrations/` in order (`001` through `008`)
 3. Storage: create **private** buckets `pdfs`, `coco`, `annotations`, `rasters`, `vectors`
 4. Authentication → Providers → Azure (Microsoft). Redirect URLs:
    - `http://localhost:5173/auth/callback`

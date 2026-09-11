@@ -81,6 +81,8 @@ export interface Job {
   slug: string;
   title: string;
   status: JobStatus;
+  project_id?: string;
+  project_name?: string;
   conflict_count: number;
   page_count: number;
   box_count: number;
@@ -100,6 +102,14 @@ export interface Job {
 export interface JobTag {
   id: string;
   name: string;
+}
+
+export interface Project {
+  id: string;
+  slug: string;
+  name: string;
+  job_count: number;
+  created_at: string;
 }
 
 export interface PageMeta {

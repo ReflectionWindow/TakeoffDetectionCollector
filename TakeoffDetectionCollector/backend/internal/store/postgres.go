@@ -40,20 +40,22 @@ func (p *Postgres) EnsureUser(ctx context.Context, id, email, name string) error
 func (p *Postgres) UpsertJob(ctx context.Context, job Job) (Job, error) {
 	if job.ID == "" {
 		row := p.db.QueryRowContext(ctx, `
-			insert into jobs (slug, title, status, source_coco_key, conflict_count)
-			values ($1,$2,$3,$4,$5)
-			on conflict (slug) do update set title=excluded.title, updated_at=now()
+			insert into jobs (slug, title, status, source_coco_key, conflict_count, project_id)
+			values ($1,$2,$3,$4,$5, nullif($6,'')::uuid)
 			returning id, slug, title, status, source_coco_key, conflict_count, created_at, updated_at`,
-			job.Slug, job.Title, job.Status, job.SourceCocoKey, job.ConflictCount)
+			job.Slug, job.Title, job.Status, job.SourceCocoKey, job.ConflictCount, job.ProjectID)
 		if err := row.Scan(&job.ID, &job.Slug, &job.Title, &job.Status, &job.SourceCocoKey, &job.ConflictCount, &job.CreatedAt, &job.UpdatedAt); err != nil {
 			return Job{}, err
 		}
-		return job, nil
+		return p.GetJob(ctx, job.ID)
 	}
 	_, err := p.db.ExecContext(ctx, `
 		update jobs set title=$2, status=$3, source_coco_key=$4, conflict_count=$5, updated_at=now()
 		where id=$1`, job.ID, job.Title, job.Status, job.SourceCocoKey, job.ConflictCount)
-	return job, err
+	if err != nil {
+		return Job{}, err
+	}
+	return p.GetJob(ctx, job.ID)
 }
 
 // jobSelect carries page, document, and box totals as aggregates so a job (or
@@ -70,8 +72,10 @@ const jobSelect = `
 	           from job_tags jt
 	           join tags t on t.id = jt.tag_id
 	           where jt.job_id = j.id
-	       ), '[]'::json)
+	       ), '[]'::json),
+	       coalesce(j.project_id::text,''), coalesce(pr.name,'')
 	from jobs j
+	left join projects pr on pr.id = j.project_id
 	left join users cu on cu.id = j.claimed_by
 	left join users cor on cor.id = j.corrected_by
 	left join users ver on ver.id = j.verified_by
@@ -102,7 +106,8 @@ func scanJob(row rowScanner) (Job, error) {
 		&job.ClaimedBy, &job.ClaimedEmail, &claimExp,
 		&job.CorrectedBy, &job.CorrectedEmail,
 		&job.VerifiedBy, &job.VerifiedEmail,
-		&job.PageCount, &job.HasPDF, &job.BoxCount, &tagsJSON)
+		&job.PageCount, &job.HasPDF, &job.BoxCount, &tagsJSON,
+		&job.ProjectID, &job.ProjectName)
 	if err != nil {
 		return Job{}, err
 	}
@@ -130,9 +135,15 @@ func (p *Postgres) GetJob(ctx context.Context, id string) (Job, error) {
 	return scanJob(p.db.QueryRowContext(ctx, jobSelect+` where j.id=$1`, id))
 }
 
-func (p *Postgres) GetJobBySlug(ctx context.Context, slug string) (Job, error) {
+func (p *Postgres) GetJobBySlug(ctx context.Context, projectID, slug string) (Job, error) {
 	var id string
-	if err := p.db.QueryRowContext(ctx, `select id from jobs where slug=$1`, slug).Scan(&id); err != nil {
+	var err error
+	if projectID == "" {
+		err = p.db.QueryRowContext(ctx, `select id from jobs where slug=$1 and project_id is null`, slug).Scan(&id)
+	} else {
+		err = p.db.QueryRowContext(ctx, `select id from jobs where slug=$1 and project_id=$2::uuid`, slug, projectID).Scan(&id)
+	}
+	if err != nil {
 		return Job{}, err
 	}
 	return p.GetJob(ctx, id)
@@ -161,6 +172,18 @@ func jobListWhere(q JobListQuery, start int) (string, []any, int) {
 		args = append(args, q.Tags)
 		n++
 	}
+	if q.Q != "" {
+		clauses = append(clauses, fmt.Sprintf(`(j.slug ilike $%d escape '\' or j.title ilike $%d escape '\')`, n, n))
+		args = append(args, ilikeContains(q.Q))
+		n++
+	}
+	if q.Project == ProjectScopeRoot {
+		clauses = append(clauses, "j.project_id is null")
+	} else if q.Project != "" {
+		clauses = append(clauses, fmt.Sprintf("j.project_id = $%d::uuid", n))
+		args = append(args, q.Project)
+		n++
+	}
 	if len(clauses) == 0 {
 		return "", args, n
 	}
@@ -169,11 +192,11 @@ func jobListWhere(q JobListQuery, start int) (string, []any, int) {
 
 func (p *Postgres) ListJobs(ctx context.Context, q JobListQuery) (JobList, error) {
 	q = q.Normalized()
-	counts, err := p.jobStageCounts(ctx, q.Tags)
+	counts, err := p.jobStageCounts(ctx, q)
 	if err != nil {
 		return JobList{}, err
 	}
-	tagCounts, err := p.jobTagCounts(ctx, q.Stage)
+	tagCounts, err := p.jobTagCounts(ctx, q)
 	if err != nil {
 		return JobList{}, err
 	}
@@ -227,8 +250,9 @@ func (p *Postgres) ListJobs(ctx context.Context, q JobListQuery) (JobList, error
 	return JobList{Jobs: out, Total: total, Limit: q.Limit, Offset: q.Offset, Counts: counts, TagCounts: tagCounts}, nil
 }
 
-func (p *Postgres) jobStageCounts(ctx context.Context, tags []string) (StageCounts, error) {
-	q := JobListQuery{Tags: tags}.Normalized()
+func (p *Postgres) jobStageCounts(ctx context.Context, q JobListQuery) (StageCounts, error) {
+	q.Stage = ""
+	q = q.Normalized()
 	where, args, _ := jobListWhere(q, 1)
 	var c StageCounts
 	err := p.db.QueryRowContext(ctx, `
@@ -240,8 +264,9 @@ func (p *Postgres) jobStageCounts(ctx context.Context, tags []string) (StageCoun
 	return c, err
 }
 
-func (p *Postgres) jobTagCounts(ctx context.Context, stage JobStatus) ([]TagCount, error) {
-	q := JobListQuery{Stage: stage}.Normalized()
+func (p *Postgres) jobTagCounts(ctx context.Context, q JobListQuery) ([]TagCount, error) {
+	q.Tags = nil
+	q = q.Normalized()
 	where, args, _ := jobListWhere(q, 1)
 	rows, err := p.db.QueryContext(ctx, `
 		select t.name, count(*)::int
@@ -618,11 +643,20 @@ func (p *Postgres) ReleaseJob(ctx context.Context, jobID, userID string) (Job, e
 	return p.GetJob(ctx, jobID)
 }
 
-func (p *Postgres) ClaimNext(ctx context.Context, userID, email string, stage JobStatus, ttl time.Duration) (Job, error) {
+func (p *Postgres) ClaimNext(ctx context.Context, userID, email string, stage JobStatus, ttl time.Duration, project string) (Job, error) {
 	if err := p.EnsureUser(ctx, userID, email, ""); err != nil {
 		return Job{}, err
 	}
 	stage = NormalizeStatus(stage)
+	project = NormalizeProjectScope(project)
+	filter := ""
+	args := []any{userID, interval(ttl), string(stage)}
+	if project == ProjectScopeRoot {
+		filter = " and j.project_id is null"
+	} else if project != "" {
+		filter = " and j.project_id = $4::uuid"
+		args = append(args, project)
+	}
 	var id string
 	err := p.db.QueryRowContext(ctx, `
 		with next as (
@@ -630,13 +664,14 @@ func (p *Postgres) ClaimNext(ctx context.Context, userID, email string, stage Jo
 			where j.status = $3
 			  and exists (select 1 from documents d where d.job_id = j.id)
 			  and (j.claimed_by is null or j.claimed_by = $1::uuid or j.claim_expires_at is null or j.claim_expires_at < now())
+			`+filter+`
 			order by j.updated_at
 			for update skip locked
 			limit 1
 		)
 		update jobs set claimed_by=$1::uuid, claimed_at=now(), claim_expires_at=now()+$2::interval, updated_at=now()
 		where id = (select id from next)
-		returning id`, userID, interval(ttl), string(stage)).Scan(&id)
+		returning id`, args...).Scan(&id)
 	if err == sql.ErrNoRows {
 		return Job{}, fmt.Errorf("no available job")
 	}
@@ -686,6 +721,70 @@ func (p *Postgres) SetStage(ctx context.Context, jobID, userID, email string, st
 		return Job{}, err
 	}
 	return p.GetJob(ctx, jobID)
+}
+
+func (p *Postgres) ListProjects(ctx context.Context) ([]Project, int, error) {
+	var rootCount int
+	if err := p.db.QueryRowContext(ctx, `select count(*) from jobs where project_id is null`).Scan(&rootCount); err != nil {
+		return nil, 0, err
+	}
+	rows, err := p.db.QueryContext(ctx, `
+		select p.id::text, p.slug, p.name, p.created_at, count(j.id)::int
+		from projects p
+		left join jobs j on j.project_id = p.id
+		group by p.id, p.slug, p.name, p.created_at
+		order by lower(p.name), p.slug`)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := make([]Project, 0)
+	for rows.Next() {
+		var proj Project
+		if err := rows.Scan(&proj.ID, &proj.Slug, &proj.Name, &proj.CreatedAt, &proj.JobCount); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, proj)
+	}
+	return out, rootCount, rows.Err()
+}
+
+func (p *Postgres) CreateProject(ctx context.Context, name string) (Project, error) {
+	name, slug, err := NormalizeProjectName(name)
+	if err != nil {
+		return Project{}, err
+	}
+	var proj Project
+	err = p.db.QueryRowContext(ctx, `
+		insert into projects (slug, name) values ($1, $2)
+		returning id::text, slug, name, created_at`, slug, name).Scan(&proj.ID, &proj.Slug, &proj.Name, &proj.CreatedAt)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return Project{}, fmt.Errorf("project already exists")
+		}
+		return Project{}, err
+	}
+	return proj, nil
+}
+
+func (p *Postgres) GetProject(ctx context.Context, id string) (Project, error) {
+	var proj Project
+	err := p.db.QueryRowContext(ctx, `
+		select id::text, slug, name, created_at from projects where id=$1::uuid`, id).Scan(&proj.ID, &proj.Slug, &proj.Name, &proj.CreatedAt)
+	if err != nil {
+		return Project{}, fmt.Errorf("project not found")
+	}
+	return proj, nil
+}
+
+func (p *Postgres) GetProjectBySlug(ctx context.Context, slug string) (Project, error) {
+	var proj Project
+	err := p.db.QueryRowContext(ctx, `
+		select id::text, slug, name, created_at from projects where slug=$1`, strings.ToLower(strings.TrimSpace(slug))).Scan(&proj.ID, &proj.Slug, &proj.Name, &proj.CreatedAt)
+	if err != nil {
+		return Project{}, fmt.Errorf("project not found")
+	}
+	return proj, nil
 }
 
 func (p *Postgres) ListTags(ctx context.Context) ([]Tag, error) {

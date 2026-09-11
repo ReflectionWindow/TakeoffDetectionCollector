@@ -6,6 +6,7 @@ import type {
   PageComment,
   PageMeta,
   PageVectorsResponse,
+  Project,
   Revision,
   StoredBox,
 } from "../api/types";
@@ -138,6 +139,8 @@ export async function me(): Promise<{ user: AuthUser; dev_auth: boolean }> {
 export async function listJobs(opts?: {
   stage?: string;
   tags?: string[];
+  q?: string;
+  project?: string;
   limit?: number;
   offset?: number;
 }): Promise<{
@@ -150,6 +153,8 @@ export async function listJobs(opts?: {
 }> {
   const q = new URLSearchParams();
   if (opts?.stage) q.set("stage", opts.stage);
+  if (opts?.q) q.set("q", opts.q);
+  if (opts?.project) q.set("project", opts.project);
   for (const tag of opts?.tags ?? []) q.append("tag", tag);
   q.set("limit", String(opts?.limit ?? 25));
   q.set("offset", String(opts?.offset ?? 0));
@@ -172,8 +177,37 @@ export async function releaseJob(id: string): Promise<{ job: Job }> {
   return request(`/v1/jobs/${id}/release`, { method: "POST" });
 }
 
-export async function claimNext(stage: "original" | "corrected" = "original"): Promise<{ job: Job }> {
-  return request(`/v1/jobs/next?stage=${stage}`, { method: "POST" });
+export async function claimNext(
+  stage: "original" | "corrected" = "original",
+  project?: string,
+): Promise<{ job: Job }> {
+  const q = new URLSearchParams({ stage });
+  if (project) q.set("project", project);
+  return request(`/v1/jobs/next?${q.toString()}`, { method: "POST" });
+}
+
+export async function listProjects(): Promise<{ projects: Project[]; root_job_count: number }> {
+  return request("/v1/projects");
+}
+
+export async function createProject(name: string): Promise<{ project: Project }> {
+  return request("/v1/projects", { method: "POST", body: JSON.stringify({ name }) });
+}
+
+export type JobImportResult = {
+  imported: number;
+  skipped: number;
+  jobs: Job[];
+  errors: { slug: string; error: string }[];
+};
+
+export async function importJobs(files: File[], projectId?: string): Promise<JobImportResult> {
+  const body = new FormData();
+  if (projectId) body.append("project_id", projectId);
+  for (const file of files) {
+    body.append("files", file, file.name);
+  }
+  return request("/v1/imports/jobs", { method: "POST", body });
 }
 
 export async function setStage(id: string, stage: Job["status"]): Promise<{ job: Job }> {

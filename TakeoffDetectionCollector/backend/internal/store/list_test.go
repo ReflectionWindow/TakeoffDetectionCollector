@@ -53,3 +53,73 @@ func TestMemoryListJobsPagesAndDelete(t *testing.T) {
 		t.Fatal("deleted job should be gone")
 	}
 }
+
+func TestMemorySearchAndProjects(t *testing.T) {
+	m := NewMemory()
+	ctx := context.Background()
+	if _, err := m.UpsertJob(ctx, Job{Slug: "alpha-sheet", Title: "Alpha Hospital", Status: StatusOriginal, ProjectID: ProjectManilaID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.UpsertJob(ctx, Job{Slug: "bravo-sheet", Title: "Bravo Clinic", Status: StatusOriginal, ProjectID: ProjectChicagoID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.UpsertJob(ctx, Job{Slug: "root-sheet", Title: "Unassigned", Status: StatusOriginal}); err != nil {
+		t.Fatal(err)
+	}
+
+	hit, err := m.ListJobs(ctx, JobListQuery{Q: "alpha", Limit: 25})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hit.Total != 1 || hit.Jobs[0].Slug != "alpha-sheet" || hit.Counts.All != 1 {
+		t.Fatalf("search %#v", hit)
+	}
+	title, err := m.ListJobs(ctx, JobListQuery{Q: "clinic", Limit: 25})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if title.Total != 1 || title.Jobs[0].Slug != "bravo-sheet" {
+		t.Fatalf("title search %#v", title)
+	}
+
+	manila, err := m.ListJobs(ctx, JobListQuery{Project: ProjectManilaID, Limit: 25})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manila.Total != 1 || manila.Jobs[0].ProjectName != "Manila" {
+		t.Fatalf("manila %#v", manila)
+	}
+	root, err := m.ListJobs(ctx, JobListQuery{Project: ProjectScopeRoot, Limit: 25})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root.Total != 1 || root.Jobs[0].Slug != "root-sheet" {
+		t.Fatalf("root %#v", root)
+	}
+
+	projects, rootCount, err := m.ListProjects(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rootCount != 1 || len(projects) != 2 {
+		t.Fatalf("projects %d %#v", rootCount, projects)
+	}
+
+	if _, err := m.UpsertJob(ctx, Job{Slug: "alpha-sheet", Title: "dup", Status: StatusOriginal, ProjectID: ProjectManilaID}); err == nil {
+		t.Fatal("duplicate slug in project should fail")
+	}
+	if _, err := m.UpsertJob(ctx, Job{Slug: "alpha-sheet", Title: "dup root", Status: StatusOriginal}); err != nil {
+		t.Fatal(err)
+	}
+
+	chicago, err := m.CreateProject(ctx, "Dallas")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chicago.Slug != "dallas" {
+		t.Fatalf("slug %s", chicago.Slug)
+	}
+	if _, err := m.CreateProject(ctx, "Manila"); err == nil {
+		t.Fatal("duplicate project")
+	}
+}

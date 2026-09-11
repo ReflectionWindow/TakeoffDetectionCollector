@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"path"
@@ -69,6 +70,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/auth/supabase", s.authSupabase)
 	mux.HandleFunc("GET /v1/jobs", s.withAuth(s.listJobs))
 	mux.HandleFunc("POST /v1/jobs/next", s.withAuth(s.claimNext))
+	mux.HandleFunc("GET /v1/projects", s.withAuth(s.listProjects))
+	mux.HandleFunc("POST /v1/projects", s.withAuth(s.createProject))
 	mux.HandleFunc("GET /v1/jobs/{id}", s.withAuth(s.getJob))
 	mux.HandleFunc("DELETE /v1/jobs/{id}", s.withAuth(s.deleteJob))
 	mux.HandleFunc("POST /v1/jobs/{id}/claim", s.withAuth(s.claimJob))
@@ -79,6 +82,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/jobs/{id}/tags", s.withAuth(s.setJobTags))
 	mux.HandleFunc("POST /v1/imports/coco", s.withAuth(s.importCoco))
 	mux.HandleFunc("POST /v1/imports/pdfs", s.withAuth(s.importPDFs))
+	mux.HandleFunc("POST /v1/imports/jobs", s.withAuth(s.importJobs))
 	mux.HandleFunc("POST /v1/jobs/{id}/pdf", s.withAuth(s.attachPDF))
 	mux.HandleFunc("GET /v1/jobs/{id}/pdf", s.withAuth(s.getPDF))
 	mux.HandleFunc("GET /v1/jobs/{id}/pages/{n}/annotations", s.withAuth(s.getAnnotations))
@@ -154,10 +158,12 @@ func (s *Server) authSupabase(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) listJobs(w http.ResponseWriter, r *http.Request, _ auth.User) {
 	q := store.JobListQuery{
-		Stage:  store.JobStatus(r.URL.Query().Get("stage")),
-		Tags:   r.URL.Query()["tag"],
-		Limit:  atoiDefault(r.URL.Query().Get("limit"), store.DefaultJobPageSize),
-		Offset: atoiDefault(r.URL.Query().Get("offset"), 0),
+		Stage:   store.JobStatus(r.URL.Query().Get("stage")),
+		Tags:    r.URL.Query()["tag"],
+		Q:       r.URL.Query().Get("q"),
+		Project: r.URL.Query().Get("project"),
+		Limit:   atoiDefault(r.URL.Query().Get("limit"), store.DefaultJobPageSize),
+		Offset:  atoiDefault(r.URL.Query().Get("offset"), 0),
 	}
 	list, err := s.store.ListJobs(r.Context(), q)
 	if err != nil {
@@ -282,11 +288,13 @@ func (s *Server) importCoco(w http.ResponseWriter, r *http.Request, u auth.User)
 }
 
 func (s *Server) persistImport(ctx context.Context, imp coco.JobImport, u auth.User) (store.Job, error) {
-	existing, err := s.store.GetJobBySlug(ctx, imp.Slug)
+	projectID := s.defaultImportProjectID(ctx)
+	existing, err := s.store.GetJobBySlug(ctx, projectID, imp.Slug)
 	job := store.Job{
-		Slug:   imp.Slug,
-		Title:  imp.Title,
-		Status: store.StatusOriginal,
+		Slug:      imp.Slug,
+		Title:     imp.Title,
+		Status:    store.StatusOriginal,
+		ProjectID: projectID,
 	}
 	if err == nil {
 		job.ID = existing.ID
@@ -439,7 +447,7 @@ func (s *Server) importPDFs(w http.ResponseWriter, r *http.Request, _ auth.User)
 	out := make([]outcome, len(files))
 	s.pool.Do(len(files), func(i int) {
 		f := files[i]
-		job, err := s.store.GetJobBySlug(ctx, f.slug)
+		job, err := s.store.GetJobBySlug(ctx, s.defaultImportProjectID(ctx), f.slug)
 		if err != nil {
 			out[i].skip = "no matching job"
 			return
@@ -469,6 +477,221 @@ func (s *Server) importPDFs(w http.ResponseWriter, r *http.Request, _ auth.User)
 		}
 	}
 	writeJSON(w, 200, map[string]any{"attached": len(attached), "skipped": skipped, "jobs": attached})
+}
+
+func (s *Server) defaultImportProjectID(ctx context.Context) string {
+	p, err := s.store.GetProjectBySlug(ctx, store.ProjectManilaSlug)
+	if err != nil {
+		return ""
+	}
+	return p.ID
+}
+
+func (s *Server) resolveProjectID(ctx context.Context, raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || strings.EqualFold(raw, store.ProjectScopeRoot) {
+		return "", nil
+	}
+	if _, err := s.store.GetProject(ctx, raw); err != nil {
+		return "", fmt.Errorf("project not found")
+	}
+	return raw, nil
+}
+
+type jobImportError struct {
+	Slug  string `json:"slug"`
+	Error string `json:"error"`
+}
+
+func (s *Server) importJobs(w http.ResponseWriter, r *http.Request, u auth.User) {
+	ctx := r.Context()
+	if err := s.store.EnsureUser(ctx, u.ID, u.Email, u.Name); err != nil {
+		log.Printf("ensure user: %v", err)
+	}
+	if err := r.ParseMultipartForm(512 << 20); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	projectID, err := s.resolveProjectID(ctx, r.FormValue("project_id"))
+	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+
+	type pending struct {
+		slug string
+		data []byte
+	}
+	var files []pending
+	if r.MultipartForm != nil {
+		for _, hdrs := range r.MultipartForm.File {
+			for _, hdr := range hdrs {
+				if hdr.Filename != "" && !strings.HasSuffix(strings.ToLower(hdr.Filename), ".pdf") {
+					continue
+				}
+				f, err := hdr.Open()
+				if err != nil {
+					continue
+				}
+				data, err := io.ReadAll(f)
+				f.Close()
+				if err != nil || len(data) == 0 {
+					continue
+				}
+				files = append(files, pending{slug: slugFromPDFName(hdr.Filename), data: data})
+			}
+		}
+	}
+	if len(files) == 0 {
+		http.Error(w, "pdf files required", 400)
+		return
+	}
+
+	imported := make([]store.Job, 0, len(files))
+	errs := make([]jobImportError, 0)
+	for _, f := range files {
+		job, err := s.persistBluebeamJob(ctx, u, projectID, f.slug, f.data)
+		if err != nil {
+			errs = append(errs, jobImportError{Slug: f.slug, Error: err.Error()})
+			continue
+		}
+		imported = append(imported, job)
+	}
+	writeJSON(w, 200, map[string]any{
+		"imported": len(imported),
+		"skipped":  len(errs),
+		"jobs":     imported,
+		"errors":   errs,
+	})
+}
+
+func (s *Server) persistBluebeamJob(ctx context.Context, u auth.User, projectID, slug string, data []byte) (store.Job, error) {
+	if len(data) < 5 || string(data[:4]) != "%PDF" {
+		return store.Job{}, fmt.Errorf("not a pdf")
+	}
+	if slug == "" {
+		return store.Job{}, fmt.Errorf("job name is empty")
+	}
+	if _, err := s.store.GetJobBySlug(ctx, projectID, slug); err == nil {
+		return store.Job{}, fmt.Errorf("job slug already exists")
+	}
+	pages := geom.ExtractMarkups(data)
+	if len(pages) == 0 {
+		n := geom.PageCount(data)
+		for i := 0; i < n; i++ {
+			vec, _ := geom.ExtractPage(data, i)
+			pages = append(pages, geom.PageMarkups{PageIndex: i, WidthPt: vec.PageWidthPt, HeightPt: vec.PageHeightPt})
+		}
+	}
+	if len(pages) == 0 {
+		return store.Job{}, fmt.Errorf("no pages in pdf")
+	}
+	title := strings.ReplaceAll(slug, "_", " ")
+	job, err := s.store.UpsertJob(ctx, store.Job{
+		Slug:      slug,
+		Title:     title,
+		Status:    store.StatusOriginal,
+		ProjectID: projectID,
+	})
+	if err != nil {
+		return store.Job{}, err
+	}
+	for _, pg := range pages {
+		wPx := int(math.Round(coords.PtToPx75(pg.WidthPt)))
+		hPx := int(math.Round(coords.PtToPx75(pg.HeightPt)))
+		if wPx < 1 {
+			wPx = 1
+		}
+		if hPx < 1 {
+			hPx = 1
+		}
+		page := store.Page{
+			JobID:      job.ID,
+			PageIndex:  pg.PageIndex,
+			PDFPage:    pg.PageIndex + 1,
+			WidthPx75:  wPx,
+			HeightPx75: hPx,
+			WidthPt:    pg.WidthPt,
+			HeightPt:   pg.HeightPt,
+			RasterDPI:  coords.ImportDPI,
+		}
+		if err := s.store.UpsertPage(ctx, page); err != nil {
+			return store.Job{}, err
+		}
+		boxes := boxesFromMarkups(pg.PageIndex, pg.Markups)
+		payload := store.AnnotationPayload{JobID: job.ID, PageIndex: pg.PageIndex, Version: 0, Boxes: boxes}
+		revKey := fmt.Sprintf("annotations/%s/p%d/v0.json", job.ID, pg.PageIndex)
+		raw, _ := json.Marshal(payload)
+		_ = s.blob.Put(revKey, raw, "application/json")
+		if err := s.store.SaveRevision(ctx, store.Revision{
+			JobID:      job.ID,
+			PageIndex:  pg.PageIndex,
+			Version:    0,
+			AuthorID:   u.ID,
+			StorageKey: revKey,
+			Note:       "imported bluebeam",
+			CreatedAt:  time.Now().UTC(),
+		}, payload); err != nil {
+			return store.Job{}, err
+		}
+	}
+	if _, err := s.attachPDFBytes(ctx, job, data); err != nil {
+		return store.Job{}, err
+	}
+	return s.store.GetJob(ctx, job.ID)
+}
+
+func boxesFromMarkups(pageIndex int, markups []geom.Markup) []store.Box {
+	out := make([]store.Box, 0, len(markups))
+	for i, m := range markups {
+		pt, px, bPt, bPx := coords.FillBoxPolys(m.PolyPt, nil, [4]float64{}, [4]float64{})
+		if pt == nil {
+			continue
+		}
+		out = append(out, store.Box{
+			ID:          fmt.Sprintf("markup-%d-%d", pageIndex, i),
+			Class:       m.Class,
+			Origin:      "imported",
+			PolygonPt:   pt,
+			PolygonPx75: px,
+			BBoxPt:      bPt,
+			BBoxPx75:    bPx,
+			Category:    geom.ClassID(m.Class),
+		})
+	}
+	return out
+}
+
+func (s *Server) listProjects(w http.ResponseWriter, r *http.Request, _ auth.User) {
+	projects, rootCount, err := s.store.ListProjects(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if projects == nil {
+		projects = []store.Project{}
+	}
+	writeJSON(w, 200, map[string]any{"projects": projects, "root_job_count": rootCount})
+}
+
+func (s *Server) createProject(w http.ResponseWriter, r *http.Request, _ auth.User) {
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	proj, err := s.store.CreateProject(r.Context(), body.Name)
+	if err != nil {
+		status := 400
+		if strings.Contains(err.Error(), "already exists") {
+			status = http.StatusConflict
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"project": proj})
 }
 
 func (s *Server) attachPDF(w http.ResponseWriter, r *http.Request, _ auth.User) {
@@ -902,7 +1125,7 @@ func (s *Server) claimNext(w http.ResponseWriter, r *http.Request, u auth.User) 
 	if err := s.store.EnsureUser(r.Context(), u.ID, u.Email, u.Name); err != nil {
 		log.Printf("ensure user: %v", err)
 	}
-	job, err := s.store.ClaimNext(r.Context(), u.ID, u.Email, stage, s.claimTTL())
+	job, err := s.store.ClaimNext(r.Context(), u.ID, u.Email, stage, s.claimTTL(), r.URL.Query().Get("project"))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return

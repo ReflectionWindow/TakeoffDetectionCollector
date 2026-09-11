@@ -330,7 +330,7 @@ code {
 }
 
 /* Inbox ------------------------------------------------------------------ */
-.inbox { padding: 28px; display: grid; gap: 24px; max-width: 1120px; width: 100%; margin: 0 auto; }
+.inbox { padding: 28px; display: grid; gap: 24px; max-width: 1200px; width: 100%; margin: 0 auto; }
 .inbox h2 { letter-spacing: -0.03em; font-weight: 600; }
 .import-panel {
   background: var(--panel-solid);
@@ -467,6 +467,9 @@ code {
 .stage-filter button:hover { color: var(--ink); background: var(--hover); }
 .stage-filter button.active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 600; }
 .tag-filter { margin-top: -4px; }
+.project-filter { margin-bottom: 8px; }
+.import-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.inbox-search { margin-top: 4px; }
 .rail-actions.wrap { flex-wrap: wrap; }
 
 .job-tags-cell { min-width: 14rem; max-width: 24rem; vertical-align: top; }
