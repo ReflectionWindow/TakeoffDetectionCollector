@@ -469,6 +469,26 @@ code {
 .tag-filter { margin-top: -4px; }
 .project-filter { margin-bottom: 8px; }
 .import-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.upload-dest {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.upload-dest select {
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--hairline-strong);
+  background: var(--input-bg);
+  cursor: pointer;
+  font-size: 13px;
+  min-width: 10rem;
+}
+.upload-dest select:focus {
+  outline: 2px solid rgba(126, 240, 197, 0.45);
+  outline-offset: 0;
+  border-color: var(--accent);
+}
+.upload-dest select:disabled { opacity: 0.4; cursor: not-allowed; }
 .inbox-search { margin-top: 4px; }
 .rail-actions.wrap { flex-wrap: wrap; }
 

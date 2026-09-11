@@ -15,7 +15,7 @@ import {
   me,
   setJobTags,
 } from "../lib/api";
-import { uploadDestinationLabel, uploadProjectId } from "../lib/projects";
+import { ROOT_UPLOAD_DEST, uploadDestinationLabel, uploadDestinations, uploadProjectId } from "../lib/projects";
 import { STAGE_LABEL, STAGES, isLockedByOther, inUseReason, normalizeStatus, openedByLabel } from "../lib/stages";
 import { mergeCatalog, tagKey } from "../lib/tags";
 
@@ -34,6 +34,7 @@ export default function InboxPage() {
   const [userId, setUserId] = useState("");
   const [stage, setStage] = useState<JobStatus | "">("");
   const [project, setProject] = useState("");
+  const [uploadDest, setUploadDest] = useState(ROOT_UPLOAD_DEST);
   const [searchInput, setSearchInput] = useState("");
   const [q, setQ] = useState("");
   const [tagFilter, setTagFilter] = useState<string[]>([]);
@@ -178,8 +179,7 @@ export default function InboxPage() {
     try {
       const res = await createProject(name);
       setProjects((prev) => [...prev, res.project].sort((a, b) => a.name.localeCompare(b.name)));
-      setProject(res.project.id);
-      setPage(0);
+      setUploadDest(res.project.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -189,8 +189,8 @@ export default function InboxPage() {
 
   async function onUpload(files: FileList | null) {
     if (!files?.length) return;
-    const destId = uploadProjectId(project);
-    const destLabel = uploadDestinationLabel(project, projects);
+    const destId = uploadProjectId(uploadDest);
+    const destLabel = uploadDestinationLabel(uploadDest, projects);
     setBusy(true);
     setError(null);
     setNotice(null);
@@ -221,7 +221,7 @@ export default function InboxPage() {
   const from = total === 0 ? 0 : page * PAGE_SIZE + 1;
   const to = Math.min(total, (page + 1) * PAGE_SIZE);
   const lastPage = Math.max(0, Math.ceil(total / PAGE_SIZE) - 1);
-  const destLabel = uploadDestinationLabel(project, projects);
+  const destinations = uploadDestinations(projects);
   const allCount = rootCount + projects.reduce((n, p) => n + (p.job_count || 0), 0);
 
   function chooseStage(next: JobStatus | "") {
@@ -280,8 +280,23 @@ export default function InboxPage() {
             />
           </div>
           <div className="row import-actions">
+            <label className="upload-dest">
+              <span className="muted small">Upload to</span>
+              <select
+                aria-label="Upload destination"
+                value={uploadDest}
+                disabled={busy}
+                onChange={(e) => setUploadDest(e.target.value)}
+              >
+                {destinations.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.name}
+                  </option>
+                ))}
+              </select>
+            </label>
             <label className="btn-primary file-btn">
-              Upload to {destLabel}
+              Upload PDF
               <input
                 type="file"
                 accept="application/pdf"
@@ -299,7 +314,7 @@ export default function InboxPage() {
             </button>
           </div>
           <p className="muted small">
-            Upload a Bluebeam PDF as a job. All / Root uploads go to Root. Select a project to store jobs there.
+            Choose Root or a project, then upload a Bluebeam PDF. New projects appear in this list.
           </p>
         </section>
 
