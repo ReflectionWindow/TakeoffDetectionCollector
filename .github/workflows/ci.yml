@@ -94,15 +94,21 @@ jobs:
       - name: Install Vercel CLI
         if: steps.vercel.outputs.ok == 'true'
         run: npm install --global vercel@latest
+      - name: Link project
+        if: steps.vercel.outputs.ok == 'true'
+        run: |
+          mkdir -p .vercel
+          printf '{"orgId":"%s","projectId":"%s"}\n' "$VERCEL_ORG_ID" "$VERCEL_PROJECT_ID" > .vercel/project.json
+          vercel link --yes --token="$VERCEL_TOKEN" --project="$VERCEL_PROJECT_ID" --scope="$VERCEL_ORG_ID"
       - name: Pull env
         if: steps.vercel.outputs.ok == 'true'
-        run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+        run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN" --scope="$VERCEL_ORG_ID"
       - name: Build
         if: steps.vercel.outputs.ok == 'true'
-        run: vercel build --prod --token="$VERCEL_TOKEN"
+        run: vercel build --prod --token="$VERCEL_TOKEN" --scope="$VERCEL_ORG_ID"
       - name: Deploy
         if: steps.vercel.outputs.ok == 'true'
-        run: vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"
+        run: vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN" --scope="$VERCEL_ORG_ID"
 
   deploy-backend:
     needs: [backend, frontend]
