@@ -25,10 +25,20 @@ export function isLockedByOther(job: Job, userId: string): boolean {
   return job.claimed_by !== userId;
 }
 
+function lastOpenerId(job: Job): string {
+  return job.claimed_by || job.verified_by || job.corrected_by || "";
+}
+
+function lastOpenerEmail(job: Job): string {
+  return job.claimed_email || job.verified_email || job.corrected_email || "";
+}
+
 export function openedByLabel(job: Job, userId: string): string {
-  if (!isClaimActive(job)) return "—";
-  if (userId && job.claimed_by === userId) return "you";
-  return job.claimed_email || "someone else";
+  const id = lastOpenerId(job);
+  const email = lastOpenerEmail(job);
+  if (!id && !email) return "—";
+  if (userId && id === userId) return "you";
+  return email || "someone else";
 }
 
 export function inUseReason(job: Job, userId: string): string | null {

@@ -610,7 +610,7 @@ func (p *Postgres) ReleaseJob(ctx context.Context, jobID, userID string) (Job, e
 		return Job{}, fmt.Errorf("not the claimant")
 	}
 	_, err = p.db.ExecContext(ctx, `
-		update jobs set claimed_by=null, claimed_at=null, claim_expires_at=null, updated_at=now()
+		update jobs set claim_expires_at=now(), updated_at=now()
 		where id=$1`, jobID)
 	if err != nil {
 		return Job{}, err

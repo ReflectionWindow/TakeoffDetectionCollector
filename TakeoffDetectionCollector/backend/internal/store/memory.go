@@ -396,10 +396,9 @@ func (m *Memory) ReleaseJob(_ context.Context, jobID, userID string) (Job, error
 	if job.ClaimedBy != "" && job.ClaimedBy != userID && job.ClaimActive(time.Now().UTC()) {
 		return Job{}, fmt.Errorf("not the claimant")
 	}
-	job.ClaimedBy = ""
-	job.ClaimedEmail = ""
-	job.ClaimExpiresAt = nil
-	job.UpdatedAt = time.Now().UTC()
+	now := time.Now().UTC()
+	job.ClaimExpiresAt = &now
+	job.UpdatedAt = now
 	m.jobs[job.ID] = job
 	return m.withCounts(job), nil
 }

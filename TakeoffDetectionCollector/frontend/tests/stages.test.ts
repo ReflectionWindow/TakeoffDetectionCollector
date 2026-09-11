@@ -45,6 +45,10 @@ describe("stages", () => {
     expect(canEdit(j, "u2")).toBe(true);
     expect(openedByLabel(j, "u1")).toBe("b@x.com");
     expect(openedByLabel(j, "u2")).toBe("you");
+    expect(openedByLabel({ ...j, claim_expires_at: new Date(Date.now() - 1000).toISOString() }, "u2")).toBe("you");
+    expect(openedByLabel(job({ verified_email: "fin@x.com", verified_by: "u3" }), "u1")).toBe("fin@x.com");
+    expect(openedByLabel(job({ verified_email: "fin@x.com", verified_by: "u3" }), "u3")).toBe("you");
+    expect(openedByLabel(job({}), "u1")).toBe("—");
     expect(inUseReason(j, "u1")).toMatch(/b@x.com has this sheet open/);
     expect(inUseReason(j, "u2")).toBeNull();
   });
