@@ -87,12 +87,9 @@ export default function LoginPage() {
   return (
     <div className="auth-wrap">
       <div className="auth-card">
-        <p className="eyebrow">TakeoffDetectionCollector</p>
-        <h1>Clean elevation labels</h1>
-        <p className="muted">
-          Microsoft accounts at {COMPANY}. Env keys can be added later — local Dev sign-in works
-          until then.
-        </p>
+        <p className="eyebrow">Collector</p>
+        <h1>Sign in</h1>
+        <p className="muted">Use a Microsoft account at {COMPANY}.</p>
         {error ? <p className="error">{error}</p> : null}
         <button type="button" className="btn-primary" disabled={!microsoft || busy || apiDown} onClick={onMicrosoft}>
           Sign in with Microsoft

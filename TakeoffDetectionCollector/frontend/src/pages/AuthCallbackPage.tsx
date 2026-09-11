@@ -88,6 +88,7 @@ export default function AuthCallbackPage() {
   return (
     <div className="auth-wrap">
       <div className="auth-card">
+        <p className="eyebrow">Collector</p>
         <h1>{error ? "Could not complete sign-in" : "Completing sign-in…"}</h1>
         {error ? <p className="error">{error}</p> : <p className="muted">Finishing Microsoft authentication.</p>}
         {error ? (
