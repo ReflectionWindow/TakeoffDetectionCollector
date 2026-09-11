@@ -100,24 +100,20 @@ jobs:
       - name: Install Vercel CLI
         if: steps.vercel.outputs.ok == 'true'
         run: npm install --global vercel@latest
-      - name: Link project
+      # Write project.json instead of `vercel link`. Link hits GET /v2/user,
+      # which team- and project-scoped tokens cannot call (User not found).
+      - name: Pull env
         if: steps.vercel.outputs.ok == 'true'
         run: |
           mkdir -p .vercel
           printf '{"orgId":"%s","projectId":"%s"}\n' "$VERCEL_ORG_ID" "$VERCEL_PROJECT_ID" > .vercel/project.json
-          if ! vercel link --yes --token="$VERCEL_TOKEN" --project="$VERCEL_PROJECT_ID" --scope="$VERCEL_ORG_ID"; then
-            echo "::error::VERCEL_TOKEN is not a valid Vercel account token. Create a Full Account token at https://vercel.com/account/tokens then run: gh secret set VERCEL_TOKEN -R ReflectionWindow/TakeoffDetectionCollector"
-            exit 1
-          fi
-      - name: Pull env
-        if: steps.vercel.outputs.ok == 'true'
-        run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN" --scope="$VERCEL_ORG_ID"
+          vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
       - name: Build
         if: steps.vercel.outputs.ok == 'true'
-        run: vercel build --prod --token="$VERCEL_TOKEN" --scope="$VERCEL_ORG_ID"
+        run: vercel build --prod --token="$VERCEL_TOKEN"
       - name: Deploy
         if: steps.vercel.outputs.ok == 'true'
-        run: vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN" --scope="$VERCEL_ORG_ID"
+        run: vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"
 
   deploy-backend:
     needs: [backend, frontend]

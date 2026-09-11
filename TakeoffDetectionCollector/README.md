@@ -298,7 +298,7 @@ GitHub Actions:
 
 | Secret | Where |
 |---|---|
-| `VERCEL_TOKEN` | [vercel.com/account/tokens](https://vercel.com/account/tokens) |
+| `VERCEL_TOKEN` | [vercel.com/account/tokens](https://vercel.com/account/tokens) — scope **RWW → takeoff-detection-collector** (project, not Full Account) |
 | `VERCEL_ORG_ID` | `TakeoffDetectionCollector/frontend/.vercel/project.json` → `orgId` after `npx vercel link` in `frontend/` |
 | `VERCEL_PROJECT_ID` | same file → `projectId` |
 | `RAILWAY_TOKEN` | Railway project → Settings → Tokens (**project** token, not an account token) |
