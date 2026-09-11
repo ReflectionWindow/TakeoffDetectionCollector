@@ -22,6 +22,9 @@ __pycache__/
 .idea/
 .vscode/
 
+# Railway IaC plan artifacts (do not commit)
+railway-plan.json
+
 # pipeline artifacts
 pipeline/datasets/
 pipeline/weights/

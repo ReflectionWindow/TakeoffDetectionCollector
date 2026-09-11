@@ -1,21 +1,21 @@
 # Tests on PRs and main. Production deploys after tests on main when the
 # matching GitHub secrets are set (see TakeoffDetectionCollector/README.md).
 #
-# Until those secrets exist, connect this repo in the Vercel and Railway
-# dashboards — they auto-redeploy on push. After you add the secrets, disable
-# Git auto-deploy on those services so a push does not ship twice.
+# Railway project shape lives in .railway/railway.ts (not railway.toml).
+# Code still deploys from the GitHub source on the collector service.
+# IaC plan/apply is .github/workflows/railway-config.yml.
 name: Collector
 
 on:
   pull_request:
     paths:
       - "TakeoffDetectionCollector/**"
-      - ".github/workflows/**"
+      - ".github/workflows/ci.yml"
   push:
     branches: [main]
     paths:
       - "TakeoffDetectionCollector/**"
-      - ".github/workflows/**"
+      - ".github/workflows/ci.yml"
   workflow_dispatch:
 
 concurrency:
@@ -106,7 +106,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Railway CLI
-        run: npm install --global @railway/cli@4
+        run: npm install --global @railway/cli
       - name: Deploy
         working-directory: TakeoffDetectionCollector/backend
         run: |
