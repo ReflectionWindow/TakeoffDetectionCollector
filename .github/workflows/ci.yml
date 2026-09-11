@@ -1,0 +1,117 @@
+# Tests on PRs and main. Production deploys after tests on main when the
+# matching GitHub secrets are set (see TakeoffDetectionCollector/README.md).
+#
+# Until those secrets exist, connect this repo in the Vercel and Railway
+# dashboards — they auto-redeploy on push. After you add the secrets, disable
+# Git auto-deploy on those services so a push does not ship twice.
+name: Collector
+
+on:
+  pull_request:
+    paths:
+      - "TakeoffDetectionCollector/**"
+      - ".github/workflows/**"
+  push:
+    branches: [main]
+    paths:
+      - "TakeoffDetectionCollector/**"
+      - ".github/workflows/**"
+  workflow_dispatch:
+
+concurrency:
+  group: collector-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: TakeoffDetectionCollector/backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: TakeoffDetectionCollector/backend/go.mod
+          cache-dependency-path: TakeoffDetectionCollector/backend/go.sum
+      - name: Test
+        run: go test ./...
+      - name: Build image
+        run: docker build -t collector .
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: TakeoffDetectionCollector/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: TakeoffDetectionCollector/frontend/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Test
+        run: npm test
+      - name: Build
+        run: npm run build
+        env:
+          VITE_API_URL: https://collector.example.invalid
+          VITE_SUPABASE_URL: https://example.supabase.co
+          VITE_SUPABASE_ANON_KEY: test-anon-key
+
+  deploy-frontend:
+    needs: [backend, frontend]
+    if: >
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      secrets.VERCEL_TOKEN != '' &&
+      secrets.VERCEL_ORG_ID != '' &&
+      secrets.VERCEL_PROJECT_ID != ''
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: TakeoffDetectionCollector/frontend
+    env:
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Vercel CLI
+        run: npm install --global vercel@latest
+      - name: Pull env
+        run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
+      - name: Build
+        run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+      - name: Deploy
+        run: vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }}
+
+  deploy-backend:
+    needs: [backend, frontend]
+    if: >
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      secrets.RAILWAY_TOKEN != ''
+    runs-on: ubuntu-latest
+    env:
+      RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Railway CLI
+        run: npm install --global @railway/cli@4
+      - name: Deploy
+        working-directory: TakeoffDetectionCollector/backend
+        run: |
+          if [ -n "${{ secrets.RAILWAY_SERVICE_ID }}" ]; then
+            railway up --ci --service "${{ secrets.RAILWAY_SERVICE_ID }}"
+          else
+            railway up --ci
+          fi
