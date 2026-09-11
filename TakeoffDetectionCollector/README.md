@@ -289,7 +289,7 @@ Dockerfile `CMD` is `/app/collector`. Allow uploads ≥ 200 MB. Hit `https://<ra
 
 GitHub Actions:
 
-- `.github/workflows/ci.yml` (**Collector**) — PR / push to `main` that touches `TakeoffDetectionCollector/` → Go tests + Docker image, frontend tests + production build. After those jobs succeed on `main` → Vercel production + `railway up` **if** the secrets below are set.
+- `.github/workflows/ci.yml` (**Collector**) — PR / push to `main` that touches `TakeoffDetectionCollector/` → Go tests (Docker image is a non-blocking smoke check) and frontend tests. On `main`, Vercel production follows a green frontend job; `railway up` follows a green backend job **if** the secrets below are set. Railway Git still deploys the API.
 - `.github/workflows/railway-config.yml` (**Railway config**) — PRs that change `.railway/` get a plan comment; merging applies that plan (`RAILWAY_TOKEN`).
 
 **Day one (no extra tokens):** connecting GitHub in the Vercel dashboard plus `railway config apply` after `railway link` is enough. Push to `main` rebuilds the service whose files changed.

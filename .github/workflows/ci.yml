@@ -42,7 +42,10 @@ jobs:
           cache-dependency-path: TakeoffDetectionCollector/backend/go.sum
       - name: Test
         run: go test ./...
+      # Smoke-check the Dockerfile. Railway Git is the real image build;
+      # a Docker Hub 502 must not block frontend CD.
       - name: Build image
+        continue-on-error: true
         run: docker build -t collector .
 
   frontend:
@@ -69,7 +72,7 @@ jobs:
           VITE_SUPABASE_ANON_KEY: test-anon-key
 
   deploy-frontend:
-    needs: [backend, frontend]
+    needs: [frontend]
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     env:
@@ -116,7 +119,7 @@ jobs:
         run: vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"
 
   deploy-backend:
-    needs: [backend, frontend]
+    needs: [backend]
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     env:
