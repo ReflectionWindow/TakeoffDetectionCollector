@@ -4,6 +4,9 @@
 # Railway project shape lives in .railway/railway.ts (not railway.toml).
 # Code still deploys from the GitHub source on the collector service.
 # IaC plan/apply is .github/workflows/railway-config.yml.
+#
+# Do not use `secrets` in job/step `if:` — GitHub rejects the whole workflow
+# at startup ("workflow file issue", 0 jobs). Gate deploys via env instead.
 name: Collector
 
 on:
@@ -67,51 +70,67 @@ jobs:
 
   deploy-frontend:
     needs: [backend, frontend]
-    if: >
-      github.ref == 'refs/heads/main' &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      secrets.VERCEL_TOKEN != '' &&
-      secrets.VERCEL_ORG_ID != '' &&
-      secrets.VERCEL_PROJECT_ID != ''
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: TakeoffDetectionCollector/frontend
     env:
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
     steps:
       - uses: actions/checkout@v4
+      - name: Check Vercel secrets
+        id: vercel
+        run: |
+          if [ -n "$VERCEL_TOKEN" ] && [ -n "$VERCEL_ORG_ID" ] && [ -n "$VERCEL_PROJECT_ID" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping Vercel deploy (missing VERCEL_TOKEN / VERCEL_ORG_ID / VERCEL_PROJECT_ID)"
+          fi
       - uses: actions/setup-node@v4
+        if: steps.vercel.outputs.ok == 'true'
         with:
           node-version: 22
       - name: Install Vercel CLI
+        if: steps.vercel.outputs.ok == 'true'
         run: npm install --global vercel@latest
       - name: Pull env
-        run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
+        if: steps.vercel.outputs.ok == 'true'
+        run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
       - name: Build
-        run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+        if: steps.vercel.outputs.ok == 'true'
+        run: vercel build --prod --token="$VERCEL_TOKEN"
       - name: Deploy
-        run: vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }}
+        if: steps.vercel.outputs.ok == 'true'
+        run: vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"
 
   deploy-backend:
     needs: [backend, frontend]
-    if: >
-      github.ref == 'refs/heads/main' &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      secrets.RAILWAY_TOKEN != ''
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     env:
       RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      RAILWAY_SERVICE_ID: ${{ secrets.RAILWAY_SERVICE_ID }}
     steps:
       - uses: actions/checkout@v4
+      - name: Check Railway token
+        id: railway
+        run: |
+          if [ -n "$RAILWAY_TOKEN" ]; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping Railway CLI deploy (RAILWAY_TOKEN unset; Git source still deploys)"
+          fi
       - name: Install Railway CLI
+        if: steps.railway.outputs.ok == 'true'
         run: npm install --global @railway/cli
       - name: Deploy
+        if: steps.railway.outputs.ok == 'true'
         working-directory: TakeoffDetectionCollector/backend
         run: |
-          if [ -n "${{ secrets.RAILWAY_SERVICE_ID }}" ]; then
-            railway up --ci --service "${{ secrets.RAILWAY_SERVICE_ID }}"
+          if [ -n "$RAILWAY_SERVICE_ID" ]; then
+            railway up --ci --service "$RAILWAY_SERVICE_ID"
           else
             railway up --ci
           fi
