@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   addTag,
+  bumpTagCounts,
   createLabel,
   jobMatchesTagFilter,
   mergeCatalog,
   normalizeTagName,
   removeTag,
   suggestTags,
+  tagToCommit,
 } from "../src/lib/tags";
 
 describe("tags", () => {
@@ -31,6 +33,13 @@ describe("tags", () => {
     expect(createLabel(["Hospital"], ["QC"], "qc")).toBeNull();
   });
 
+  it("commits typed text unless the list was used", () => {
+    expect(tagToCommit("Kitchen", "Hospital", false)).toBe("Kitchen");
+    expect(tagToCommit("Kitchen", "Hospital", true)).toBe("Hospital");
+    expect(tagToCommit("Kitchen", "__create:Kitchen", true)).toBe("Kitchen");
+    expect(tagToCommit("", "Hospital", false)).toBeNull();
+  });
+
   it("removes by case-insensitive name", () => {
     expect(removeTag(["Hospital", "QC"], "hospital")).toEqual(["QC"]);
   });
@@ -44,5 +53,14 @@ describe("tags", () => {
 
   it("merges catalog with tags already on jobs", () => {
     expect(mergeCatalog([{ name: "Hospital" }], [{ tags: ["QC"] }])).toEqual(["Hospital", "QC"]);
+  });
+
+  it("bumps filter counts when a job is tagged", () => {
+    expect(bumpTagCounts([], [], ["Kitchen"])).toEqual([{ name: "Kitchen", count: 1 }]);
+    expect(bumpTagCounts([{ name: "Kitchen", count: 1 }], ["Kitchen"], ["Kitchen", "West"])).toEqual([
+      { name: "Kitchen", count: 1 },
+      { name: "West", count: 1 },
+    ]);
+    expect(bumpTagCounts([{ name: "Kitchen", count: 1 }], ["Kitchen"], [])).toEqual([]);
   });
 });

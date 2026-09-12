@@ -466,33 +466,17 @@ code {
 }
 .stage-filter button:hover { color: var(--ink); background: var(--hover); }
 .stage-filter button.active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); font-weight: 600; }
-.tag-filter { margin-top: -4px; }
+.tag-filter { margin-top: -4px; align-items: center; }
+.filter-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-3);
+  font-weight: 600;
+  margin-right: 4px;
+}
 .project-filter { margin-bottom: 8px; }
-.import-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.upload-dest {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-.upload-dest select {
-  padding: 8px 12px;
-  border-radius: var(--radius);
-  border: 1px solid var(--hairline-strong);
-  background: var(--input-bg);
-  cursor: pointer;
-  font-size: 13px;
-  min-width: 10rem;
-}
-.upload-dest select:focus {
-  outline: 2px solid rgba(126, 240, 197, 0.45);
-  outline-offset: 0;
-  border-color: var(--accent);
-}
-.upload-dest select:disabled { opacity: 0.4; cursor: not-allowed; }
-.inbox-search { margin-top: 4px; }
-.rail-actions.wrap { flex-wrap: wrap; }
-
-.job-tags-cell { min-width: 14rem; max-width: 24rem; vertical-align: top; }
+.job-tags-cell { min-width: 14rem; max-width: 24rem; vertical-align: top; overflow: visible; }
 .job-tags {
   position: relative;
   display: flex;
@@ -524,19 +508,25 @@ code {
 }
 .tag-x:hover { opacity: 1; background: rgb(255 255 255 / 0.1); }
 .tag-input {
-  border: 0;
-  background: transparent;
-  min-width: 9rem;
+  border: 1px solid var(--hairline-strong);
+  background: var(--input-bg);
+  min-width: 10rem;
   flex: 1 1 8rem;
-  padding: 4px 2px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
   outline: none;
+}
+.tag-input:focus {
+  border-color: var(--accent);
+  outline: 2px solid rgba(126, 240, 197, 0.45);
+  outline-offset: 0;
 }
 .tag-input::placeholder { color: var(--ink-3); }
 .tag-menu {
   position: absolute;
   left: 0;
   top: calc(100% + 4px);
-  z-index: 30;
+  z-index: 40;
   min-width: min(18rem, 70vw);
   max-height: 12rem;
   overflow: auto;
@@ -548,6 +538,30 @@ code {
   margin: 0;
   list-style: none;
 }
+.import-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.upload-dest {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.upload-dest select {
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--hairline-strong);
+  background: var(--input-bg);
+  cursor: pointer;
+  font-size: 13px;
+  min-width: 10rem;
+}
+.upload-dest select:focus {
+  outline: 2px solid rgba(126, 240, 197, 0.45);
+  outline-offset: 0;
+  border-color: var(--accent);
+}
+.upload-dest select:disabled { opacity: 0.4; cursor: not-allowed; }
+.inbox-search { margin-top: 4px; }
+.rail-actions.wrap { flex-wrap: wrap; }
+
 .tag-menu button {
   width: 100%;
   text-align: left;

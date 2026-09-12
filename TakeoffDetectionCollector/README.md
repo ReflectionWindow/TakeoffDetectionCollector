@@ -48,7 +48,7 @@ Jobs start in **Original**. Matching is by filename stem = COCO job slug.
 
 ## Tags
 
-Jobs can have free-form tags (building, market, QC notes, and so on). Type in the inbox or job header to pick an existing tag or create a new one. The catalog is shared across jobs; names are unique ignoring case. Filter the inbox by clicking a tag chip.
+Jobs can have free-form tags (building, market, QC notes, and so on). In the inbox Tags column or the job header, type a name and press Enter to create it, or pick an existing name from the list that appears as you type. Click × on a pill to remove it from that job. Unused names leave the shared catalog. Filter the inbox with the Tags chips (jobs that have any of the selected tags).
 
 ## Cleaning process
 

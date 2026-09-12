@@ -48,6 +48,14 @@ export function createLabel(catalog: string[], assigned: string[], query: string
   return name;
 }
 
+/** Enter commits typed text unless the user arrowed to a suggestion. */
+export function tagToCommit(query: string, highlighted: string | undefined, usedList: boolean): string | null {
+  if (usedList && highlighted) {
+    return highlighted.startsWith("__create:") ? highlighted.slice(9) : highlighted;
+  }
+  return normalizeTagName(query);
+}
+
 export function mergeCatalog(catalog: { name: string }[], jobs: { tags?: string[] }[]): string[] {
   const map = new Map<string, string>();
   for (const t of catalog) {
@@ -80,4 +88,31 @@ export function tagCounts(jobs: { tags?: string[] }[]): Record<string, number> {
     }
   }
   return counts;
+}
+
+export function bumpTagCounts(
+  counts: { name: string; count: number }[],
+  before: string[] | undefined,
+  after: string[],
+): { name: string; count: number }[] {
+  const map = new Map<string, { name: string; count: number }>();
+  for (const t of counts) map.set(tagKey(t.name), { name: t.name, count: t.count });
+  const beforeKeys = new Set(jobTags(before).map(tagKey));
+  const afterList = jobTags(after);
+  const afterKeys = new Set(afterList.map(tagKey));
+  for (const name of afterList) {
+    const key = tagKey(name);
+    if (beforeKeys.has(key)) continue;
+    const cur = map.get(key);
+    map.set(key, { name: cur?.name ?? name, count: (cur?.count ?? 0) + 1 });
+  }
+  for (const name of jobTags(before)) {
+    const key = tagKey(name);
+    if (afterKeys.has(key)) continue;
+    const cur = map.get(key);
+    if (!cur) continue;
+    if (cur.count <= 1) map.delete(key);
+    else map.set(key, { ...cur, count: cur.count - 1 });
+  }
+  return [...map.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
 }

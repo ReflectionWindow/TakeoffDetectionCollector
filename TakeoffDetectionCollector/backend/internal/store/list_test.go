@@ -123,3 +123,36 @@ func TestMemorySearchAndProjects(t *testing.T) {
 		t.Fatal("duplicate project")
 	}
 }
+
+func TestMemoryListJobsByTag(t *testing.T) {
+	m := NewMemory()
+	ctx := context.Background()
+	a, err := m.UpsertJob(ctx, Job{Slug: "a", Title: "a", Status: StatusOriginal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := m.UpsertJob(ctx, Job{Slug: "b", Title: "b", Status: StatusOriginal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SetJobTags(ctx, a.ID, []string{"Kitchen"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SetJobTags(ctx, b.ID, []string{"West"}); err != nil {
+		t.Fatal(err)
+	}
+	hit, err := m.ListJobs(ctx, JobListQuery{Tags: []string{"kitchen"}, Limit: 25})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hit.Total != 1 || hit.Jobs[0].Slug != "a" || len(hit.TagCounts) != 2 {
+		t.Fatalf("tag filter %#v", hit)
+	}
+	any, err := m.ListJobs(ctx, JobListQuery{Tags: []string{"Kitchen", "west"}, Limit: 25})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if any.Total != 2 {
+		t.Fatalf("or filter %#v", any)
+	}
+}

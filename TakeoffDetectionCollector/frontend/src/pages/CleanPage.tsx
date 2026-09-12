@@ -150,6 +150,7 @@ export default function CleanPage() {
 
   const heldRef = useRef(false);
   const claimGenRef = useRef(0);
+  const tagWriteRef = useRef(0);
   const pdfRef = useRef<{ jobId: string; doc: Awaited<ReturnType<typeof loadPdfData>> } | null>(null);
   const sheetCacheRef = useRef(new Map<number, SheetEntry>());
   const loadGenRef = useRef(0);
@@ -714,12 +715,17 @@ export default function CleanPage() {
 
   async function onSaveTags(tags: string[]) {
     if (!id) return;
+    const seq = ++tagWriteRef.current;
+    setJob((j) => (j ? { ...j, tags } : j));
     try {
       const res = await setJobTags(id, tags);
+      if (tagWriteRef.current !== seq) return;
       setJob(res.job);
       setTagCatalog((prev) => mergeCatalog(prev.map((name) => ({ name })), [res.job]));
     } catch (err) {
-      setError(isSessionError(err) ? SESSION_EXPIRED_MESSAGE : err instanceof Error ? err.message : String(err));
+      if (tagWriteRef.current === seq) {
+        setError(isSessionError(err) ? SESSION_EXPIRED_MESSAGE : err instanceof Error ? err.message : String(err));
+      }
     }
   }
 

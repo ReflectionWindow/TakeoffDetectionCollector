@@ -206,6 +206,7 @@ func (m *Memory) DeleteJob(_ context.Context, id string) ([]string, error) {
 			delete(m.comments, cid)
 		}
 	}
+	m.pruneUnusedTagsLocked()
 	return nil, nil
 }
 
@@ -604,7 +605,22 @@ func (m *Memory) SetJobTags(_ context.Context, jobID string, names []string) (Jo
 	job.Tags = canonical
 	job.UpdatedAt = time.Now().UTC()
 	m.jobs[job.ID] = job
+	m.pruneUnusedTagsLocked()
 	return m.withCounts(job), nil
+}
+
+func (m *Memory) pruneUnusedTagsLocked() {
+	used := map[string]struct{}{}
+	for _, job := range m.jobs {
+		for _, name := range job.Tags {
+			used[strings.ToLower(name)] = struct{}{}
+		}
+	}
+	for key := range m.tags {
+		if _, ok := used[key]; !ok {
+			delete(m.tags, key)
+		}
+	}
 }
 
 func (m *Memory) ListPageComments(_ context.Context, jobID string, pageIndex int) ([]PageComment, error) {

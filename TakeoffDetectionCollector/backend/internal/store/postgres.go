@@ -318,6 +318,9 @@ func (p *Postgres) DeleteJob(ctx context.Context, id string) ([]string, error) {
 	if n == 0 {
 		return nil, fmt.Errorf("job not found")
 	}
+	if err := pruneUnusedTags(ctx, tx); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
@@ -837,6 +840,9 @@ func (p *Postgres) SetJobTags(ctx context.Context, jobID string, names []string)
 	if _, err := tx.ExecContext(ctx, `update jobs set updated_at = now() where id = $1`, jobID); err != nil {
 		return Job{}, err
 	}
+	if err := pruneUnusedTags(ctx, tx); err != nil {
+		return Job{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return Job{}, err
 	}
@@ -908,6 +914,11 @@ func (p *Postgres) DeletePageComment(ctx context.Context, jobID, commentID, user
 		return fmt.Errorf("not the author")
 	}
 	_, err = p.db.ExecContext(ctx, `delete from page_comments where id = $1::uuid and job_id = $2::uuid`, commentID, jobID)
+	return err
+}
+
+func pruneUnusedTags(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `delete from tags t where not exists (select 1 from job_tags jt where jt.tag_id = t.id)`)
 	return err
 }
 

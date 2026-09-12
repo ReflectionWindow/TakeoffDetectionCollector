@@ -73,7 +73,25 @@ func TestMemorySetJobTags(t *testing.T) {
 		t.Fatalf("cleared %#v", cleared.Tags)
 	}
 	still, err := m.ListTags(ctx)
-	if err != nil || len(still) != 2 {
-		t.Fatalf("catalog should persist %#v %v", still, err)
+	if err != nil || len(still) != 0 {
+		t.Fatalf("unused tags should drop from catalog %#v %v", still, err)
+	}
+
+	other, err := m.UpsertJob(ctx, Job{Slug: "other", Title: "other", Status: StatusOriginal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SetJobTags(ctx, job.ID, []string{"Kitchen"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SetJobTags(ctx, other.ID, []string{"Kitchen"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.SetJobTags(ctx, job.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	shared, err := m.ListTags(ctx)
+	if err != nil || len(shared) != 1 || shared[0].Name != "Kitchen" {
+		t.Fatalf("shared tag should remain %#v %v", shared, err)
 	}
 }

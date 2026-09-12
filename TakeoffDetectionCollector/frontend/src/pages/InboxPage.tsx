@@ -17,7 +17,7 @@ import {
 } from "../lib/api";
 import { ROOT_UPLOAD_DEST, uploadDestinationLabel, uploadDestinations, uploadProjectId } from "../lib/projects";
 import { STAGE_LABEL, STAGES, isLockedByOther, inUseReason, normalizeStatus, openedByLabel } from "../lib/stages";
-import { mergeCatalog, tagKey } from "../lib/tags";
+import { bumpTagCounts, mergeCatalog, tagKey } from "../lib/tags";
 
 const PAGE_SIZE = 25;
 
@@ -43,6 +43,8 @@ export default function InboxPage() {
   const [counts, setCounts] = useState({ all: 0, original: 0, corrected: 0, complete: 0 });
   const [tagCounts, setTagCounts] = useState<{ name: string; count: number }[]>([]);
   const pendingTags = useRef(new Set<string>());
+  const tagWrites = useRef(new Map<string, number>());
+  const jobTagsRef = useRef(new Map<string, string[]>());
   const pendingDeletes = useRef(new Set<string>());
   const [reload, setReload] = useState(0);
 
@@ -86,7 +88,6 @@ export default function InboxPage() {
         listProjects().catch(() => ({ projects: [] as Project[], root_job_count: 0 })),
       ]);
       if (!alive) return;
-      setCatalog(tags.tags);
       setProjects(proj.projects);
       setRootCount(proj.root_job_count);
       setJobs((prev) =>
@@ -94,9 +95,15 @@ export default function InboxPage() {
           .filter((j) => !pendingDeletes.current.has(j.id))
           .map((j) => (pendingTags.current.has(j.id) ? (prev.find((p) => p.id === j.id) ?? j) : j)),
       );
+      for (const j of data.jobs) {
+        if (!pendingTags.current.has(j.id)) jobTagsRef.current.set(j.id, j.tags ?? []);
+      }
       setTotal(data.total);
       setCounts(data.counts);
-      setTagCounts(data.tag_counts ?? []);
+      if (pendingTags.current.size === 0) {
+        setCatalog(tags.tags);
+        setTagCounts(data.tag_counts ?? []);
+      }
       if (data.total > 0 && page * PAGE_SIZE >= data.total) {
         setPage(Math.max(0, Math.floor((data.total - 1) / PAGE_SIZE)));
       }
@@ -127,16 +134,27 @@ export default function InboxPage() {
   }
 
   async function onTags(jobId: string, tags: string[]) {
+    const seq = (tagWrites.current.get(jobId) ?? 0) + 1;
+    tagWrites.current.set(jobId, seq);
     pendingTags.current.add(jobId);
+    const prevTags = jobTagsRef.current.get(jobId);
+    jobTagsRef.current.set(jobId, tags);
     setJobs((prev) => prev.map((j) => (j.id === jobId ? { ...j, tags } : j)));
+    setTagCounts((prev) => bumpTagCounts(prev, prevTags, tags));
+    setCatalog((prev) => mergeCatalog(prev, [{ tags }]).map((name) => ({ name })));
     try {
       const res = await setJobTags(jobId, tags);
+      if (tagWrites.current.get(jobId) !== seq) return;
       setJobs((prev) => prev.map((j) => (j.id === jobId ? res.job : j)));
+      jobTagsRef.current.set(jobId, res.job.tags ?? []);
       setCatalog((prev) => mergeCatalog(prev, [res.job]).map((name) => ({ name })));
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (tagWrites.current.get(jobId) === seq) {
+        setError(err instanceof Error ? err.message : String(err));
+        setReload((n) => n + 1);
+      }
     } finally {
-      pendingTags.current.delete(jobId);
+      if (tagWrites.current.get(jobId) === seq) pendingTags.current.delete(jobId);
     }
   }
 
@@ -218,6 +236,15 @@ export default function InboxPage() {
     for (const t of tagCounts) map[tagKey(t.name)] = t.count;
     return map;
   }, [tagCounts]);
+  const filterChips = useMemo(() => {
+    const map = new Map<string, { name: string; count: number }>();
+    for (const t of tagCounts) map.set(tagKey(t.name), t);
+    for (const name of tagFilter) {
+      const key = tagKey(name);
+      if (!map.has(key)) map.set(key, { name, count: byTag[key] ?? 0 });
+    }
+    return [...map.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+  }, [tagCounts, tagFilter, byTag]);
   const from = total === 0 ? 0 : page * PAGE_SIZE + 1;
   const to = Math.min(total, (page + 1) * PAGE_SIZE);
   const lastPage = Math.max(0, Math.ceil(total / PAGE_SIZE) - 1);
@@ -350,20 +377,25 @@ export default function InboxPage() {
               </button>
             ))}
           </div>
-          {tagCounts.length ? (
-            <div className="stage-filter tag-filter">
-              {tagCounts.map((t) => (
-                <button
-                  key={t.name}
-                  type="button"
-                  className={tagFilter.some((x) => tagKey(x) === tagKey(t.name)) ? "active" : ""}
-                  onClick={() => toggleTagFilter(t.name)}
-                >
-                  {t.name} ({byTag[tagKey(t.name)] ?? t.count})
-                </button>
-              ))}
-            </div>
-          ) : null}
+          <div className="stage-filter tag-filter" role="group" aria-label="Filter by tags">
+            <span className="filter-label">Tags</span>
+            <button type="button" className={tagFilter.length === 0 ? "active" : ""} onClick={() => { setTagFilter([]); setPage(0); }}>
+              All
+            </button>
+            {filterChips.map((t) => (
+              <button
+                key={t.name}
+                type="button"
+                className={tagFilter.some((x) => tagKey(x) === tagKey(t.name)) ? "active" : ""}
+                onClick={() => toggleTagFilter(t.name)}
+              >
+                {t.name} ({byTag[tagKey(t.name)] ?? t.count})
+              </button>
+            ))}
+            {filterChips.length === 0 ? (
+              <span className="muted small">Type a tag on a job and press Enter to create one.</span>
+            ) : null}
+          </div>
           <table className="jobs">
             <thead>
               <tr>

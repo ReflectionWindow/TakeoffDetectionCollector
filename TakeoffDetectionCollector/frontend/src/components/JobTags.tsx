@@ -7,6 +7,7 @@ import {
   jobTags,
   removeTag,
   suggestTags,
+  tagToCommit,
 } from "../lib/tags";
 
 type Props = {
@@ -22,6 +23,7 @@ export default function JobTags({ tags, catalog, onChange, disabled, compact }: 
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [hi, setHi] = useState(0);
+  const [usedList, setUsedList] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listId = useId();
@@ -30,6 +32,8 @@ export default function JobTags({ tags, catalog, onChange, disabled, compact }: 
   const created = createLabel(catalog, assigned, query);
   const options = created ? [...suggestions, `__create:${created}`] : suggestions;
   const atCap = assigned.length >= MAX_TAGS_PER_JOB;
+  const typed = query.trim();
+  const showMenu = open && !disabled && !atCap && (Boolean(typed) || usedList) && (options.length > 0 || Boolean(typed));
 
   useEffect(() => {
     if (!open) return;
@@ -42,33 +46,44 @@ export default function JobTags({ tags, catalog, onChange, disabled, compact }: 
 
   useEffect(() => {
     setHi(0);
-  }, [query, open]);
+    setUsedList(false);
+  }, [query]);
 
   function commit(raw: string) {
     const next = addTag(assigned, catalog, raw);
     if (!next) return;
     setQuery("");
+    setUsedList(false);
     if (next !== assigned) onChange(next);
-    setOpen(true);
     inputRef.current?.focus();
+  }
+
+  function commitTypedOrPick() {
+    const pick = options[hi];
+    const raw = tagToCommit(query, pick, usedList);
+    if (!raw) return;
+    commit(raw);
   }
 
   function onKeyDown(e: KeyboardEvent<HTMLInputElement>) {
     if (e.key === "ArrowDown") {
       e.preventDefault();
       setOpen(true);
+      setUsedList(true);
       setHi((n) => (options.length ? (n + 1) % options.length : 0));
       return;
     }
     if (e.key === "ArrowUp") {
       e.preventDefault();
       setOpen(true);
+      setUsedList(true);
       setHi((n) => (options.length ? (n - 1 + options.length) % options.length : 0));
       return;
     }
     if (e.key === "Escape") {
       setOpen(false);
       setQuery("");
+      setUsedList(false);
       return;
     }
     if (e.key === "Backspace" && !query && assigned.length) {
@@ -76,23 +91,22 @@ export default function JobTags({ tags, catalog, onChange, disabled, compact }: 
       return;
     }
     if (e.key === "Enter" || e.key === ",") {
-      const pick = options[hi];
-      if (open && pick) {
-        e.preventDefault();
-        commit(pick.startsWith("__create:") ? pick.slice(9) : pick);
-        return;
-      }
-      if (query.trim()) {
-        e.preventDefault();
-        commit(query);
-      }
+      e.preventDefault();
+      commitTypedOrPick();
     }
   }
 
-  const showMenu = open && !disabled && !atCap && (options.length > 0 || Boolean(query.trim()));
-
   return (
-    <div ref={wrapRef} className={`job-tags${compact ? " compact" : ""}`} onClick={(e) => e.stopPropagation()}>
+    <div
+      ref={wrapRef}
+      className={`job-tags${compact ? " compact" : ""}`}
+      onClick={(e) => e.stopPropagation()}
+      onBlur={(e) => {
+        if (wrapRef.current?.contains(e.relatedTarget as Node)) return;
+        if (query.trim()) commit(query);
+        setOpen(false);
+      }}
+    >
       {assigned.map((name) => (
         <span key={name} className="pill tag">
           {name}
@@ -114,7 +128,7 @@ export default function JobTags({ tags, catalog, onChange, disabled, compact }: 
           className="tag-input"
           value={query}
           maxLength={MAX_TAG_LEN}
-          placeholder={assigned.length ? "Add tag" : "Add or find a tag"}
+          placeholder={assigned.length ? "Add tag" : "Type a tag, then Enter"}
           aria-label="Add tag"
           aria-autocomplete="list"
           aria-expanded={showMenu}
@@ -134,7 +148,10 @@ export default function JobTags({ tags, catalog, onChange, disabled, compact }: 
               <button
                 type="button"
                 className={hi === i ? "active" : ""}
-                onMouseEnter={() => setHi(i)}
+                onMouseEnter={() => {
+                  setHi(i);
+                  setUsedList(true);
+                }}
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => commit(name)}
               >
@@ -147,7 +164,10 @@ export default function JobTags({ tags, catalog, onChange, disabled, compact }: 
               <button
                 type="button"
                 className={hi === suggestions.length ? "active" : ""}
-                onMouseEnter={() => setHi(suggestions.length)}
+                onMouseEnter={() => {
+                  setHi(suggestions.length);
+                  setUsedList(true);
+                }}
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => commit(created)}
               >
@@ -155,7 +175,7 @@ export default function JobTags({ tags, catalog, onChange, disabled, compact }: 
               </button>
             </li>
           ) : null}
-          {!options.length && query.trim() ? <li className="tag-empty">No matches</li> : null}
+          {!options.length && typed ? <li className="tag-empty">No matches</li> : null}
         </ul>
       ) : null}
     </div>
