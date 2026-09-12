@@ -294,7 +294,7 @@ GitHub Actions:
 
 **Day one (no extra tokens):** connecting GitHub in the Vercel dashboard plus `railway config apply` after `railway link` is enough. Push to `main` rebuilds the service whose files changed.
 
-**Gated deploys (tests must pass first):** add these GitHub repo secrets. `RAILWAY_TOKEN` is also what `.github/workflows/railway-config.yml` uses to plan/apply `.railway/railway.ts` on PRs. Then **disable** Vercel Git auto-deploy if you use the Collector workflow's Vercel job, so a push does not ship twice. Leave Railway Git connected — the TypeScript file owns the GitHub source and watch paths.
+**Gated deploys (tests must pass first):** add these GitHub repo secrets. `RAILWAY_TOKEN` is also what `.github/workflows/railway-config.yml` uses to plan/apply `.railway/railway.ts` on PRs. Vercel Git should stay **on** so a push to `main` shows up in the Vercel dashboard; the Collector workflow also deploys production after a green frontend job. Leave Railway Git connected — the TypeScript file owns the GitHub source and watch paths.
 
 | Secret | Where |
 |---|---|
