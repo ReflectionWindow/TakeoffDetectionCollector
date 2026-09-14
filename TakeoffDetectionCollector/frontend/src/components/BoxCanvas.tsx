@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { Box, PolyPoint } from "../api/types";
 import { classColor, classNameToId } from "../lib/classes";
 import {
@@ -45,6 +45,7 @@ import {
   snapRectEdges,
   snapResizeEdges,
   VECTOR_OVERLAY_COLOR,
+  VECTOR_OVERLAY_HOVER_PX,
   vectorOverlayPaths,
   type ActiveSnapMark,
   type AdjustSnap,
@@ -160,11 +161,13 @@ export default function BoxCanvas({
   fitKey = "",
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
+  const overlayMaskId = `vector-hover-${useId().replace(/:/g, "")}`;
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [viewSize, setViewSize] = useState({ w: 0, h: 0 });
   const snap = snapping ? adjustSnap : NO_SNAP;
   const [snapMark, setSnapMark] = useState<ActiveSnapMark | null>(null);
+  const [overlayCursor, setOverlayCursor] = useState<PolyPoint | null>(null);
   const [hover, setHover] = useState<PolyPoint | null>(null);
   const [draftRect, setDraftRect] = useState<Rect | null>(null);
   const [marquee, setMarquee] = useState<Rect | null>(null);
@@ -199,13 +202,14 @@ export default function BoxCanvas({
   const selectedSet = new Set(selectedIds);
   const commentedSet = new Set(commentedIds);
   const vectorOverlay = useMemo(() => {
-    if (!geometryIndex || viewSize.w <= 0 || viewSize.h <= 0) return null;
+    if (!geometryIndex || viewSize.w <= 0 || viewSize.h <= 0 || !overlayCursor) return null;
     return vectorOverlayPaths(
       geometryIndex,
       overlayViewRect(pan.x, pan.y, zoom, viewSize.w, viewSize.h),
       zoom,
+      overlayCursor,
     );
-  }, [geometryIndex, zoom, pan.x, pan.y, viewSize.w, viewSize.h]);
+  }, [geometryIndex, zoom, pan.x, pan.y, viewSize.w, viewSize.h, overlayCursor]);
 
   useEffect(() => {
     previewRef.current = null;
@@ -387,6 +391,7 @@ export default function BoxCanvas({
     snapRafRef.current = requestAnimationFrame(() => {
       snapRafRef.current = 0;
       const cursor = hoverRef.current;
+      setOverlayCursor(cursor);
       if (dragRef.current || !cursor || !geometryIndex || (!snap.point && !snap.line)) {
         if (!dragRef.current) setSnapMark(null);
         return;
@@ -809,6 +814,8 @@ export default function BoxCanvas({
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
       onPointerLeave={() => {
+        hoverRef.current = null;
+        setOverlayCursor(null);
         if (!dragRef.current) setSnapMark(null);
       }}
       onDoubleClick={onDoubleClick}
@@ -852,6 +859,23 @@ export default function BoxCanvas({
           <div className="blank-sheet" />
         )}
         <svg className="overlay" viewBox={`0 0 ${imageWidth} ${imageHeight}`}>
+          {vectorOverlay && overlayCursor ? (
+            <defs>
+              <radialGradient id={`${overlayMaskId}-fade`} cx="50%" cy="50%" r="50%">
+                <stop offset="0%" stopColor="#fff" />
+                <stop offset="62%" stopColor="#fff" />
+                <stop offset="100%" stopColor="#000" stopOpacity="0" />
+              </radialGradient>
+              <mask id={overlayMaskId} maskUnits="userSpaceOnUse">
+                <circle
+                  cx={overlayCursor.x}
+                  cy={overlayCursor.y}
+                  r={VECTOR_OVERLAY_HOVER_PX / zoom}
+                  fill={`url(#${overlayMaskId}-fade)`}
+                />
+              </mask>
+            </defs>
+          ) : null}
           {vectorOverlay?.lines ? (
             <path
               className="vector-overlay"
@@ -860,10 +884,16 @@ export default function BoxCanvas({
               stroke={VECTOR_OVERLAY_COLOR}
               strokeWidth={1.25 / zoom}
               strokeLinecap="square"
+              mask={overlayCursor ? `url(#${overlayMaskId})` : undefined}
             />
           ) : null}
           {vectorOverlay?.dots ? (
-            <path className="vector-overlay" d={vectorOverlay.dots} fill={VECTOR_OVERLAY_COLOR} />
+            <path
+              className="vector-overlay"
+              d={vectorOverlay.dots}
+              fill={VECTOR_OVERLAY_COLOR}
+              mask={overlayCursor ? `url(#${overlayMaskId})` : undefined}
+            />
           ) : null}
           {shownBlackouts.map((r, i) => {
             const selected = selectedBlackoutIndex === i;

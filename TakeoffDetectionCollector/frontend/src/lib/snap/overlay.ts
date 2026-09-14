@@ -1,10 +1,13 @@
 /** Zoomed-in overlay of kept PDF strokes and junction / crossing dots. */
 
+import { querySegmentIds } from "./spatial";
 import type { FillPoly, GeometryIndex, Point, Segment, SnapHit } from "./types";
 
 /** Past fit-to-page; actual size (100%) is well above this. */
 export const VECTOR_OVERLAY_MIN_ZOOM = 1.5;
 export const VECTOR_OVERLAY_COLOR = "#e11d48";
+/** Screen-space halo: linework is only painted inside this radius of the cursor. */
+export const VECTOR_OVERLAY_HOVER_PX = 48;
 
 const DOT_SCREEN_PX = 1.6;
 const VIEW_PAD_SCREEN = 24;
@@ -101,13 +104,62 @@ export function visibleDots(dots: Point[], view: OverlayView, cap = MAX_OVERLAY_
   return out;
 }
 
-/** Combined SVG paths for in-view snap segments and junction dots, or null when nothing to draw. */
-export function vectorOverlayPaths(index: GeometryIndex, view: OverlayView, zoom: number): VectorOverlayPaths | null {
-  if (!shouldShowVectorOverlay(zoom)) return null;
-  const marks = visibleDots(index.dots ?? [], view);
-  const segs = visibleSegments(index.segments, view);
-  if (!marks.length && !segs.length) return null;
+function lerpPoint(a: Point, b: Point, t: number): Point {
+  return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+}
+
+/** Portion of AB inside the disk of radius r around c, or null if they miss. */
+export function clipSegmentToDisk(a: Point, b: Point, c: Point, r: number): { a: Point; b: Point } | null {
+  if (!(r > 0)) return null;
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const fx = a.x - c.x;
+  const fy = a.y - c.y;
+  const A = dx * dx + dy * dy;
+  const B = 2 * (fx * dx + fy * dy);
+  const C = fx * fx + fy * fy - r * r;
+  if (!(A > 1e-18)) return C <= 0 ? { a: { x: a.x, y: a.y }, b: { x: a.x, y: a.y } } : null;
+  const disc = B * B - 4 * A * C;
+  if (disc < 0) return null;
+  const s = Math.sqrt(disc);
+  const inv = 0.5 / A;
+  const lo = Math.max(0, (-B - s) * inv);
+  const hi = Math.min(1, (-B + s) * inv);
+  if (hi < lo) return null;
+  return { a: lerpPoint(a, b, lo), b: lerpPoint(a, b, hi) };
+}
+
+/** Combined SVG paths for snap segments and junction dots near the cursor, or null. */
+export function vectorOverlayPaths(
+  index: GeometryIndex,
+  view: OverlayView,
+  zoom: number,
+  cursor?: Point | null,
+): VectorOverlayPaths | null {
+  if (!shouldShowVectorOverlay(zoom) || !cursor) return null;
   const z = zoom > 1e-9 ? zoom : 1e-9;
+  const radiusPx = VECTOR_OVERLAY_HOVER_PX / z;
+  const ids = querySegmentIds(index.spatial, cursor.x, cursor.y, radiusPx);
+  const segs: { a: Point; b: Point }[] = [];
+  for (const id of ids) {
+    const seg = index.segmentById.get(id);
+    if (!seg) continue;
+    const clipped = clipSegmentToDisk(seg.a, seg.b, cursor, radiusPx);
+    if (!clipped) continue;
+    segs.push(clipped);
+    if (segs.length >= MAX_OVERLAY_LINES) break;
+  }
+  const r2 = radiusPx * radiusPx;
+  const marks: Point[] = [];
+  for (const p of index.dots ?? []) {
+    if (!inView(p, view)) continue;
+    const dx = p.x - cursor.x;
+    const dy = p.y - cursor.y;
+    if (dx * dx + dy * dy > r2) continue;
+    marks.push(p);
+    if (marks.length >= MAX_OVERLAY_DOTS) break;
+  }
+  if (!marks.length && !segs.length) return null;
   const dotR = DOT_SCREEN_PX / z;
   return {
     fills: "",

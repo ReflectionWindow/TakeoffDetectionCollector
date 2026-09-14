@@ -3,8 +3,10 @@ import type { PageVectorsResponse } from "../src/api/types";
 import { bakeGeometryIndex } from "../src/lib/snap";
 import {
   activeSnapMark,
+  clipSegmentToDisk,
   overlayViewRect,
   shouldShowVectorOverlay,
+  VECTOR_OVERLAY_HOVER_PX,
   VECTOR_OVERLAY_MIN_ZOOM,
   vectorOverlayPaths,
   visibleDots,
@@ -92,14 +94,16 @@ describe("vector overlay culling", () => {
     expect(visibleFills(index.fills, view, 0.02)).toHaveLength(0);
   });
 
-  it("builds red overlay paths once zoomed in", () => {
+  it("builds red overlay paths once zoomed in and the cursor is nearby", () => {
     const index = bakeGeometryIndex(vectors())!;
     const view = overlayViewRect(0, 0, 2, 400, 400);
-    expect(vectorOverlayPaths(index, view, 1)).toBeNull();
-    const paths = vectorOverlayPaths(index, view, 2);
+    expect(vectorOverlayPaths(index, view, 1, { x: 40, y: 5 })).toBeNull();
+    expect(vectorOverlayPaths(index, view, 2)).toBeNull();
+    expect(vectorOverlayPaths(index, view, 2, { x: 0, y: 90 })).toBeNull();
+    const paths = vectorOverlayPaths(index, view, 2, { x: 40, y: 5 });
     expect(paths).not.toBeNull();
     expect(paths!.fills).toBe("");
-    expect(paths!.lines).toMatch(/M 40 /);
+    expect(paths!.lines).toMatch(/M /);
     expect(paths!.crosses).toBe("");
     expect(paths!.dots.length).toBeGreaterThan(0);
   });
@@ -132,7 +136,7 @@ describe("vector overlay culling", () => {
     )!;
     expect(index.segments).toHaveLength(0);
     const view = overlayViewRect(0, 0, 2, 400, 400);
-    expect(vectorOverlayPaths(index, view, 2)).toBeNull();
+    expect(vectorOverlayPaths(index, view, 2, { x: 40, y: 30 })).toBeNull();
   });
 
   it("draws linework even when the page has no ticks", () => {
@@ -140,11 +144,26 @@ describe("vector overlay culling", () => {
       vectorsFixtureOnlyLines([[0, 10, 80, 10]]),
     )!;
     const view = overlayViewRect(0, 0, 2, 400, 400);
-    const paths = vectorOverlayPaths(index, view, 2);
+    const paths = vectorOverlayPaths(index, view, 2, { x: 40, y: 10 });
     expect(paths).not.toBeNull();
-    expect(paths!.lines).toMatch(/M 0 10 L 80 10/);
+    expect(paths!.lines).toMatch(/L /);
+    expect(paths!.lines).not.toMatch(/L 80 10/);
     expect(paths!.crosses).toBe("");
     expect(paths!.dots).toBe("");
+  });
+
+  it("hides distant linework and clips a long edge to the cursor halo", () => {
+    const index = bakeGeometryIndex(vectorsFixtureOnlyLines([[0, 10, 200, 10]]))!;
+    const view = overlayViewRect(0, 0, 2, 400, 400);
+    expect(vectorOverlayPaths(index, view, 2, { x: 10, y: 80 })).toBeNull();
+    const paths = vectorOverlayPaths(index, view, 2, { x: 10, y: 10 });
+    expect(paths).not.toBeNull();
+    expect(paths!.lines).not.toMatch(/L 200 /);
+    const radius = VECTOR_OVERLAY_HOVER_PX / 2;
+    const clipped = clipSegmentToDisk({ x: 0, y: 10 }, { x: 200, y: 10 }, { x: 10, y: 10 }, radius);
+    expect(clipped).not.toBeNull();
+    expect(clipped!.a.x).toBeCloseTo(0);
+    expect(clipped!.b.x).toBeCloseTo(10 + radius);
   });
 
   it("dots corners and crossings, not dead-end endpoints", () => {
@@ -162,5 +181,15 @@ describe("vector overlay culling", () => {
     expect(t).toBe(true);
     expect(cross).toBe(true);
     expect(dead).toBe(false);
+  });
+});
+
+describe("clipSegmentToDisk", () => {
+  it("keeps the overlap of a segment and a disk", () => {
+    const hit = clipSegmentToDisk({ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 5, y: 0 }, 2);
+    expect(hit).not.toBeNull();
+    expect(hit!.a.x).toBeCloseTo(3);
+    expect(hit!.b.x).toBeCloseTo(7);
+    expect(clipSegmentToDisk({ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 5, y: 8 }, 2)).toBeNull();
   });
 });

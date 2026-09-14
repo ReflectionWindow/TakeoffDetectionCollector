@@ -10,6 +10,7 @@ export {
   geometryHasOverlay,
   shouldShowVectorOverlay,
   VECTOR_OVERLAY_COLOR,
+  VECTOR_OVERLAY_HOVER_PX,
   VECTOR_OVERLAY_MIN_ZOOM,
   overlayViewRect,
   vectorOverlayPaths,
