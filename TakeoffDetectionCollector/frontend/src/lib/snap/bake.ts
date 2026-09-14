@@ -1,8 +1,8 @@
 /** Bake PageVectorsResponse (PDF pt) into a PNG-space GeometryIndex. */
 
 import type { PageVectorsResponse } from "../../api/types";
-import { midpoint, quantize } from "./math";
-import { buildSpatialGrid } from "./spatial";
+import { midpoint, quantize, segmentInteriorIntersection } from "./math";
+import { buildSpatialGrid, querySegmentIdsInAabb } from "./spatial";
 import { bakeScaleFromSizes, pdfToPng } from "./transform";
 import type {
   DimTextPng,
@@ -19,6 +19,7 @@ const ENDPOINT_MERGE_PX = 0.5;
 const MIN_SEG_LEN_PX = 0.25;
 /** Soft client cap after rect/quad explode (server already caps raw drawings). */
 const MAX_BAKED_SEGMENTS = 16_000;
+const CROSSING_PAIR_CAP = 40_000;
 
 function aabb(a: Point, b: Point) {
   return {
@@ -180,24 +181,6 @@ export function bakeGeometryIndex(
     if (pts.length < 2) continue;
     const poly = polyBounds(pts);
     if (poly) fills.push(poly);
-    const w = poly ? poly.maxX - poly.minX : 0;
-    const h = poly ? poly.maxY - poly.minY : 0;
-    const pageArea = imageWidthPx * imageHeightPx;
-    if (pageArea > 0 && w * h > 0.45 * pageArea) continue;
-    // Elongated skinny poche is already exploded as long faces in extract.
-    // Fat fills (glass / openings) still need their outline as snap edges.
-    const skinnyMullion = Math.min(w, h) <= 16 && Math.max(w, h) >= Math.min(w, h) * 3;
-    if (skinnyMullion) continue;
-    for (let i = 0; i < pts.length; i += 1) {
-      const a = pts[i]!;
-      const b = pts[(i + 1) % pts.length]!;
-      const id: SegmentId = `s:${pageIndex}:f:${segSeq}`;
-      segSeq += 1;
-      const seg = makeSegment(id, a, b);
-      if (!seg) continue;
-      segments.push(seg);
-      segmentById.set(seg.id, seg);
-    }
   }
 
   let truncated = Boolean(vectors.stats?.truncated);
@@ -229,7 +212,6 @@ export function bakeGeometryIndex(
   for (const raw of vectors.points ?? []) {
     if (raw.length < 2) continue;
     const p = pdfToPng({ x: raw[0]!, y: raw[1]! }, scale);
-    dots.push(p);
     const key = endpointKey(p);
     if (epMap.has(key)) continue;
     const id: EndpointId = `e:${pageIndex}:${epSeq}`;
@@ -258,6 +240,7 @@ export function bakeGeometryIndex(
   });
 
   const spatial = buildSpatialGrid(segments, endpoints);
+  dots.push(...overlayDots(segments, endpoints, spatial, segmentById));
   const empty = segments.length === 0 && endpoints.length === 0;
 
   return {
@@ -278,4 +261,37 @@ export function bakeGeometryIndex(
     truncated,
     spatial,
   };
+}
+
+function overlayDots(
+  segments: Segment[],
+  endpoints: Endpoint[],
+  spatial: ReturnType<typeof buildSpatialGrid>,
+  segmentById: Map<SegmentId, Segment>,
+): Point[] {
+  const out: Point[] = [];
+  const seen = new Set<string>();
+  const add = (p: Point) => {
+    const key = `${quantize(p.x, ENDPOINT_MERGE_PX)}:${quantize(p.y, ENDPOINT_MERGE_PX)}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ x: quantize(p.x, ENDPOINT_MERGE_PX), y: quantize(p.y, ENDPOINT_MERGE_PX) });
+  };
+  for (const ep of endpoints) {
+    if (ep.segmentIds.length >= 2) add(ep.p);
+  }
+  let pairs = 0;
+  for (const a of segments) {
+    const ids = querySegmentIdsInAabb(spatial, a.minX, a.minY, a.maxX, a.maxY);
+    for (const id of ids) {
+      if (id <= a.id) continue;
+      const b = segmentById.get(id);
+      if (!b) continue;
+      pairs += 1;
+      if (pairs > CROSSING_PAIR_CAP) return out;
+      const p = segmentInteriorIntersection(a.a, a.b, b.a, b.b);
+      if (p) add(p);
+    }
+  }
+  return out;
 }

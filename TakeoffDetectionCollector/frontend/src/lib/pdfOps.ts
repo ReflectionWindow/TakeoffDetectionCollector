@@ -30,6 +30,9 @@ export type PdfVectorOps = {
   paintFormXObjectEnd: number;
   beginGroup: number;
   endGroup: number;
+  setLineWidth: number;
+  setDash: number;
+  setGState: number;
 };
 
 export type PdfVectorExtract = {
@@ -48,12 +51,57 @@ const MAX_FILLS = 8_000;
 const MAX_POINTS = 8_000;
 const MAX_LINES = 16_000;
 const DOT_MERGE_PX = 1.25;
+/** Fat ink in PDF user space (after CTM). Offset to both edges, drop the centerline. */
+const FAT_STROKE_PT = 1.5;
+/** Hairline that spans most of the page is a grid, not a window frame. */
+const SPANNER_FRAC = 0.85;
+const SPANNER_THICK_PX = 8;
 
 /** Brick / poche cells: small and roughly square. Mullions are long and thin. */
 function isHatchCell(w: number, h: number): boolean {
   const min = Math.min(w, h);
   const max = Math.max(w, h);
   return max <= HATCH_CELL_PX && max < min * 2.5;
+}
+
+function ctmLength(m: Mat, x: number, y: number): number {
+  const a = applyMat(m, 0, 0);
+  const b = applyMat(m, x, y);
+  return Math.hypot(b.x - a.x, b.y - a.y);
+}
+
+function isDashed(dash: unknown): boolean {
+  if (!Array.isArray(dash)) return false;
+  return dash.some((v) => typeof v === "number" && v > 0);
+}
+
+function isPageSpanner(a: PdfOpPoint, b: PdfOpPoint, pageW: number, pageH: number): boolean {
+  const dx = Math.abs(b.x - a.x);
+  const dy = Math.abs(b.y - a.y);
+  const len = Math.hypot(dx, dy);
+  if (len >= SPANNER_FRAC * Math.max(pageW, pageH)) return true;
+  if (dx >= SPANNER_FRAC * pageW && dy <= SPANNER_THICK_PX) return true;
+  if (dy >= SPANNER_FRAC * pageH && dx <= SPANNER_THICK_PX) return true;
+  return false;
+}
+
+function offsetEnds(a: PdfOpPoint, b: PdfOpPoint, half: number): [PdfOpPoint, PdfOpPoint][] {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len = Math.hypot(dx, dy);
+  if (!(len > 0) || !(half > 0)) return [[a, b]];
+  const nx = (-dy / len) * half;
+  const ny = (dx / len) * half;
+  return [
+    [
+      { x: a.x + nx, y: a.y + ny },
+      { x: b.x + nx, y: b.y + ny },
+    ],
+    [
+      { x: a.x - nx, y: a.y - ny },
+      { x: b.x - nx, y: b.y - ny },
+    ],
+  ];
 }
 
 export function mulMat(m: Mat, n: Mat): Mat {
@@ -126,7 +174,11 @@ export function walkPdfOps(
   const fills: number[][] = [];
   const points: number[][] = [];
   const ctmStack: Mat[] = [];
+  const lwStack: number[] = [];
+  const dashStack: boolean[] = [];
   let ctm: Mat = IDENTITY;
+  let lineWidth = 1;
+  let dashed = false;
   let clipNext = false;
   let subpaths: PdfOpPoint[][] = [];
   let current: PdfOpPoint[] = [];
@@ -154,6 +206,13 @@ export function walkPdfOps(
     }
     if (lines.length >= MAX_LINES) return;
     lines.push([q(a.x), q(a.y), q(b.x), q(b.y)]);
+  };
+
+  const strokeWidthPt = () => ctmLength(ctm, lineWidth, 0);
+  const strokeWidthPage = () => {
+    const a = map(0, 0);
+    const b = map(lineWidth, 0);
+    return Math.hypot(b.x - a.x, b.y - a.y);
   };
 
   const consumeConstructPath = (packed: unknown) => {
@@ -231,11 +290,22 @@ export function walkPdfOps(
 
   const recordOutline = (pts: PdfOpPoint[], close: boolean) => {
     if (pts.length < 2) return;
-    for (let i = 1; i < pts.length; i += 1) addLine(pts[i - 1]!, pts[i]!);
+    const fat = strokeWidthPt() >= FAT_STROKE_PT - 1e-9;
+    const hairline = strokeWidthPt() < FAT_STROKE_PT;
+    const half = strokeWidthPage() / 2;
+    const pushSeg = (a: PdfOpPoint, b: PdfOpPoint) => {
+      if (hairline && isPageSpanner(a, b, pageW, pageH)) return;
+      if (fat && half > 0.25) {
+        for (const [oa, ob] of offsetEnds(a, b, half)) addLine(oa, ob);
+        return;
+      }
+      addLine(a, b);
+    };
+    for (let i = 1; i < pts.length; i += 1) pushSeg(pts[i - 1]!, pts[i]!);
     if (!close) return;
     const a = pts[0]!;
     const b = pts[pts.length - 1]!;
-    if (Math.hypot(a.x - b.x, a.y - b.y) > 0.5) addLine(b, a);
+    if (Math.hypot(a.x - b.x, a.y - b.y) > 0.5) pushSeg(b, a);
   };
 
   /** Keep the long faces of a mullion; drop the 2–4 px caps. */
@@ -286,6 +356,7 @@ export function walkPdfOps(
   };
 
   const recordStrokes = () => {
+    if (dashed) return;
     for (const pts of [...subpaths, current].filter((p) => p.length)) {
       if (pts.length === 1) {
         addPoint(pts[0]!);
@@ -293,6 +364,18 @@ export function walkPdfOps(
       }
       recordOutline(pts, false);
     }
+  };
+
+  const pushGfx = () => {
+    ctmStack.push(ctm);
+    lwStack.push(lineWidth);
+    dashStack.push(dashed);
+  };
+
+  const popGfx = () => {
+    ctm = ctmStack.pop() ?? IDENTITY;
+    lineWidth = lwStack.pop() ?? 1;
+    dashed = dashStack.pop() ?? false;
   };
 
   const clearPath = () => {
@@ -340,11 +423,25 @@ export function walkPdfOps(
       continue;
     }
     if (fn === ops.save || fn === ops.beginGroup) {
-      ctmStack.push(ctm);
+      pushGfx();
       continue;
     }
     if (fn === ops.restore || fn === ops.endGroup || fn === ops.paintFormXObjectEnd) {
-      ctm = ctmStack.pop() ?? IDENTITY;
+      popGfx();
+      continue;
+    }
+    if (fn === ops.setLineWidth && args && args.length >= 1) {
+      lineWidth = Number(args[0]);
+      continue;
+    }
+    if (fn === ops.setDash && args) {
+      dashed = isDashed(args[0]);
+      continue;
+    }
+    if (fn === ops.setGState && args && args[0] && typeof args[0] === "object") {
+      const gs = args[0] as { LW?: unknown; D?: unknown };
+      if (gs.LW != null) lineWidth = Number(gs.LW);
+      if (gs.D != null) dashed = isDashed(Array.isArray(gs.D) ? gs.D[0] : gs.D);
       continue;
     }
     if (fn === ops.transform && args && args.length >= 6) {
@@ -352,7 +449,7 @@ export function walkPdfOps(
       continue;
     }
     if (fn === ops.paintFormXObjectBegin) {
-      ctmStack.push(ctm);
+      pushGfx();
       const matrix = args?.[0];
       if (Array.isArray(matrix) && matrix.length >= 6) ctm = mulMat(ctm, matrix as unknown as Mat);
       continue;

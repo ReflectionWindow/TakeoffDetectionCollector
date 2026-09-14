@@ -36,6 +36,7 @@ import { commentedBoxIds } from "../lib/comments";
 import { displayToPt, overlayBoxPoints } from "../lib/coords";
 import { pointsOf, polygonAABB } from "../lib/geometry";
 import { BOX_COPY_OFFSET, duplicateBoxes } from "../lib/boxCopy";
+import { markupSourceVersion, shouldRasterOverlay } from "../lib/revisions";
 import { STAGE_LABEL, canEdit, normalizeStatus, statusActions } from "../lib/stages";
 import { mergeCatalog } from "../lib/tags";
 import type { BlackoutRegion } from "../lib/pageBlackouts";
@@ -297,47 +298,35 @@ export default function CleanPage() {
         }
       }
       setIndex(geom);
-      const rasterOverlay = ann.payload.version === 0;
-      let nextBoxes = cachedBoxes ?? toBoxes(ann.payload.boxes, wPx, hPx, wPt, hPt, meta, rasterOverlay);
-      let nextStored = ann.payload.boxes;
-      let nextVersion = ann.payload.version;
-      if (writable && geom && ann.payload.version === 0 && !cachedBoxes) {
-        const snapped = snapModelBoxes(nextBoxes, geom);
-        if (snapped.changed) {
-          const storedBoxes: StoredBox[] = snapped.boxes.map((b) => {
-            const prev = ann.payload.boxes.find((s) => s.id === b.box_id);
-            const pts = pointsOf(b);
-            const polygon_pt = pts.map((p) => [(p.x / wPx) * wPt, (p.y / hPx) * hPt] as [number, number]);
-            const aabb = polygonAABB(polygon_pt.map(([x, y]) => ({ x, y })));
-            return {
-              id: b.box_id,
-              class: b.class_name || klass,
-              origin: b.origin === "user" ? "user" : "imported",
-              polygon_pt,
-              polygon_px75: prev?.polygon_px75 ?? [],
-              bbox_pt: [aabb.x1, aabb.y1, aabb.x2 - aabb.x1, aabb.y2 - aabb.y1],
-              bbox_px75: prev?.bbox_px75 ?? [0, 0, 0, 0],
-              edited: false,
-              category_id: b.category_id,
-            };
-          });
-          const res = await saveAnnotations(jobId, idx, storedBoxes, "auto-snap");
+      let payload = ann.payload;
+      let revision = ann.revision;
+      const source = markupSourceVersion(revs.revisions);
+      if (source != null && source !== payload.version) {
+        if (writable) {
+          const restored = await revertAnnotations(jobId, idx, source);
           if (gen !== loadGenRef.current) return;
-          nextStored = res.payload.boxes;
-          nextVersion = res.payload.version;
-          nextBoxes = toBoxes(res.payload.boxes, wPx, hPx, wPt, hPt, meta, false);
+          payload = restored.payload;
+          revision = restored.revision;
           const latest = await listRevisions(jobId, idx);
           if (gen !== loadGenRef.current) return;
           setRevisions(latest.revisions);
         } else {
-          nextBoxes = snapped.boxes;
+          const restored = await getAnnotations(jobId, idx, source);
+          if (gen !== loadGenRef.current) return;
+          payload = restored.payload;
+          revision = restored.revision;
         }
       }
-      setStored(nextStored);
-      setVersion(nextVersion);
+      const rasterOverlay = shouldRasterOverlay(payload.version, revision.note);
+      const nextBoxes =
+        source != null || !cachedBoxes
+          ? toBoxes(payload.boxes, wPx, hPx, wPt, hPt, meta, rasterOverlay)
+          : cachedBoxes;
+      setStored(payload.boxes);
+      setVersion(payload.version);
       draft.hydrate(key, nextBoxes);
     },
-    [draft, klass, toBoxes],
+    [draft, toBoxes],
   );
 
   const prefetchNeighbors = useCallback(
@@ -377,14 +366,19 @@ export default function CleanPage() {
             }
             const key = pageCacheKey(jobId, i, wPx, hPx);
             if (draft.cached(key)) return;
-            const ann = await getAnnotations(jobId, i);
+            const [ann, pageRevs] = await Promise.all([getAnnotations(jobId, i), listRevisions(jobId, i)]);
+            const source = markupSourceVersion(pageRevs.revisions);
+            const shown = source != null && source !== ann.payload.version ? await getAnnotations(jobId, i, source) : ann;
             const geomKey = geometryCacheKey(jobId, i, wPx, hPx);
             if (!geometryHasOverlay(getCachedGeometryIndex(geomKey)) && pdfRef.current?.jobId === jobId) {
               const vec = await extractPageVectorsFromDoc(pdfRef.current.doc, i, jobId);
               const baked = bakeGeometryIndex(vec, { imageWidthPx: wPx, imageHeightPx: hPx, pageIndex: i });
               if (baked) setCachedGeometryIndex(geomKey, baked);
             }
-            draft.warm(key, toBoxes(ann.payload.boxes, wPx, hPx, wPt, hPt, meta, ann.payload.version === 0));
+            draft.warm(
+              key,
+              toBoxes(shown.payload.boxes, wPx, hPx, wPt, hPt, meta, shouldRasterOverlay(shown.payload.version, shown.revision.note)),
+            );
           } catch {
             /* prefetch is best-effort */
           }
@@ -563,7 +557,7 @@ export default function CleanPage() {
     setVersion(res.payload.version);
     draft.hydrate(
       pageCacheKey(id, pageIndex, displayW, displayH),
-      toBoxes(res.payload.boxes, displayW, displayH, pageWpt, pageHpt, page, res.payload.version === 0),
+      toBoxes(res.payload.boxes, displayW, displayH, pageWpt, pageHpt, page, shouldRasterOverlay(res.payload.version, res.revision.note)),
     );
     const revs = await listRevisions(id, pageIndex);
     setRevisions(revs.revisions);

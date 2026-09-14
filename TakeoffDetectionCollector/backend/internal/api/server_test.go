@@ -90,6 +90,23 @@ func TestHealthDevAuthImportAndVersion(t *testing.T) {
 		t.Fatalf("save %d %s", w.Code, w.Body.String())
 	}
 
+	req = httptest.NewRequest(http.MethodGet, "/v1/jobs/"+jobID+"/pages/0/annotations?version=0", nil)
+	req.Header.Set("Authorization", "Bearer "+auth.Token)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("annotations v0 %d %s", w.Code, w.Body.String())
+	}
+	var v0 struct {
+		Payload store.AnnotationPayload `json:"payload"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&v0); err != nil {
+		t.Fatal(err)
+	}
+	if v0.Payload.Version != 0 {
+		t.Fatalf("v0 version %d", v0.Payload.Version)
+	}
+
 	req = httptest.NewRequest(http.MethodGet, "/v1/jobs/"+jobID+"/export/coco", nil)
 	req.Header.Set("Authorization", "Bearer "+auth.Token)
 	w = httptest.NewRecorder()
@@ -536,5 +553,94 @@ func TestImportJobsProjectsAndSearch(t *testing.T) {
 	h.ServeHTTP(w, req)
 	if w.Code != 200 {
 		t.Fatalf("create project %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestImportCocoBlackouts(t *testing.T) {
+	cfg := config.Config{
+		CORSOrigins:        []string{"http://localhost:5173"},
+		AllowedEmailDomain: "reflectionwindow.com",
+		DevAuth:            true,
+	}
+	s := New(cfg, store.NewMemory(), storage.NewMemory())
+	h := s.Handler()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/dev", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("dev auth %d %s", w.Code, w.Body.String())
+	}
+	var auth struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&auth); err != nil || auth.Token == "" {
+		t.Fatal(auth)
+	}
+
+	cocoJSON := []byte(`{"images":[{"id":1,"file_name":"page_0002.png","width":1000,"height":500}],"categories":[{"id":1,"name":"CW"},{"id":2,"name":"blackout"}],"annotations":[{"id":1,"image_id":1,"category_id":1,"bbox":[10,20,30,40]},{"id":2,"image_id":1,"category_id":2,"bbox":[100,50,200,100]}]}`)
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	fw, err := mw.CreateFormFile("file", "demo.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fw.Write(cocoJSON); err != nil {
+		t.Fatal(err)
+	}
+	mw.Close()
+	req = httptest.NewRequest(http.MethodPost, "/v1/imports/coco", &body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("Authorization", "Bearer "+auth.Token)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("import %d %s", w.Code, w.Body.String())
+	}
+	var imported struct {
+		Jobs []store.Job `json:"jobs"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&imported); err != nil || len(imported.Jobs) != 1 {
+		t.Fatalf("imported %+v %v", imported, err)
+	}
+	jobID := imported.Jobs[0].ID
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/jobs/"+jobID+"/pages/2/annotations", nil)
+	req.Header.Set("Authorization", "Bearer "+auth.Token)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("annotations %d %s", w.Code, w.Body.String())
+	}
+	var anns struct {
+		Payload store.AnnotationPayload `json:"payload"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&anns); err != nil {
+		t.Fatal(err)
+	}
+	if len(anns.Payload.Boxes) != 1 || anns.Payload.Boxes[0].Class != "CW" {
+		t.Fatalf("boxes %+v", anns.Payload.Boxes)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/v1/jobs/"+jobID+"/pages/2/blackouts", nil)
+	req.Header.Set("Authorization", "Bearer "+auth.Token)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("blackouts %d %s", w.Code, w.Body.String())
+	}
+	var blk struct {
+		Regions []struct {
+			X1 float64 `json:"x1"`
+			Y1 float64 `json:"y1"`
+			X2 float64 `json:"x2"`
+			Y2 float64 `json:"y2"`
+		} `json:"regions"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&blk); err != nil {
+		t.Fatal(err)
+	}
+	if len(blk.Regions) != 1 || blk.Regions[0].X1 != 0.1 || blk.Regions[0].Y1 != 0.1 || blk.Regions[0].X2 != 0.3 || blk.Regions[0].Y2 != 0.3 {
+		t.Fatalf("regions %+v", blk.Regions)
 	}
 }

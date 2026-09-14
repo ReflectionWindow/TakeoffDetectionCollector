@@ -68,16 +68,17 @@ describe("shouldShowVectorOverlay", () => {
   it("stays off until the sheet is zoomed in to the overlay cutoff", () => {
     expect(shouldShowVectorOverlay(VECTOR_OVERLAY_MIN_ZOOM - 0.01)).toBe(false);
     expect(shouldShowVectorOverlay(VECTOR_OVERLAY_MIN_ZOOM)).toBe(true);
-    expect(shouldShowVectorOverlay(1)).toBe(true);
+    expect(shouldShowVectorOverlay(1)).toBe(false);
   });
 });
 
 describe("vector overlay culling", () => {
-  it("keeps fills and dots that sit in the view", () => {
+  it("keeps fills and junction dots that sit in the view", () => {
     const index = bakeGeometryIndex(vectors())!;
     const view = { minX: 0, minY: 0, maxX: 60, maxY: 60 };
     expect(visibleFills(index.fills, view, 4).length).toBeGreaterThanOrEqual(1);
-    expect(visibleDots(index.dots, view).some((p) => p.x === 50 && p.y === 50)).toBe(true);
+    expect(visibleDots(index.dots, view).some((p) => Math.abs(p.x - 40) < 0.6 && Math.abs(p.y - 5) < 0.6)).toBe(true);
+    expect(visibleDots(index.dots, view).some((p) => p.x === 50 && p.y === 50)).toBe(false);
   });
 
   it("keeps CAD rects as color fills", () => {
@@ -93,15 +94,13 @@ describe("vector overlay culling", () => {
 
   it("builds red overlay paths once zoomed in", () => {
     const index = bakeGeometryIndex(vectors())!;
-    const view = overlayViewRect(0, 0, 1, 400, 400);
-    expect(vectorOverlayPaths(index, view, 0.2)).toBeNull();
-    const paths = vectorOverlayPaths(index, view, 1);
+    const view = overlayViewRect(0, 0, 2, 400, 400);
+    expect(vectorOverlayPaths(index, view, 1)).toBeNull();
+    const paths = vectorOverlayPaths(index, view, 2);
     expect(paths).not.toBeNull();
     expect(paths!.fills).toBe("");
     expect(paths!.lines).toMatch(/M 40 /);
-    expect(paths!.lines).toMatch(/M 10 /);
-    expect(paths!.crosses).toMatch(/M 50 /);
-    expect(paths!.crosses).toMatch(/M 90 /);
+    expect(paths!.crosses).toBe("");
     expect(paths!.dots.length).toBeGreaterThan(0);
   });
 
@@ -123,7 +122,7 @@ describe("vector overlay culling", () => {
     expect(mark?.point).toEqual(hit.point);
   });
 
-  it("draws a fat poche outline as a red snap edge", () => {
+  it("does not turn a bulky poche fill into overlay snap edges", () => {
     const index = bakeGeometryIndex(
       vectors({
         points: [],
@@ -131,32 +130,37 @@ describe("vector overlay culling", () => {
         fills: [[10, 10, 80, 10, 80, 50, 10, 50]],
       }),
     )!;
-    expect(index.segments.length).toBe(4);
-    const view = overlayViewRect(0, 0, 1, 400, 400);
-    const paths = vectorOverlayPaths(index, view, 1);
-    expect(paths).not.toBeNull();
-    expect(paths!.lines).toMatch(/M 10 10 L 80 10/);
-    const hit = {
-      mode: "nearest" as const,
-      point: { x: 40, y: 10 },
-      distPx: 1,
-      screenDistPx: 1,
-      segmentId: index.segments[0]!.id,
-      guide: { kind: "segment" as const, a: index.segments[0]!.a, b: index.segments[0]!.b },
-    };
-    const mark = activeSnapMark(hit, index);
-    expect(mark?.a).toEqual(index.segments[0]!.a);
-    expect(mark?.b).toEqual(index.segments[0]!.b);
+    expect(index.segments).toHaveLength(0);
+    const view = overlayViewRect(0, 0, 2, 400, 400);
+    expect(vectorOverlayPaths(index, view, 2)).toBeNull();
   });
 
   it("draws linework even when the page has no ticks", () => {
     const index = bakeGeometryIndex(
       vectorsFixtureOnlyLines([[0, 10, 80, 10]]),
     )!;
-    const view = overlayViewRect(0, 0, 1, 400, 400);
-    const paths = vectorOverlayPaths(index, view, 1);
+    const view = overlayViewRect(0, 0, 2, 400, 400);
+    const paths = vectorOverlayPaths(index, view, 2);
     expect(paths).not.toBeNull();
     expect(paths!.lines).toMatch(/M 0 10 L 80 10/);
     expect(paths!.crosses).toBe("");
+    expect(paths!.dots).toBe("");
+  });
+
+  it("dots corners and crossings, not dead-end endpoints", () => {
+    const index = bakeGeometryIndex(
+      vectorsFixtureOnlyLines([
+        [0, 10, 40, 10],
+        [40, 10, 40, 40],
+        [10, 0, 10, 40],
+        [0, 20, 40, 20],
+      ]),
+    )!;
+    const t = index.dots.some((p) => Math.abs(p.x - 40) < 0.6 && Math.abs(p.y - 10) < 0.6);
+    const cross = index.dots.some((p) => Math.abs(p.x - 10) < 0.6 && Math.abs(p.y - 20) < 0.6);
+    const dead = index.dots.some((p) => Math.abs(p.x - 0) < 0.6 && Math.abs(p.y - 10) < 0.6);
+    expect(t).toBe(true);
+    expect(cross).toBe(true);
+    expect(dead).toBe(false);
   });
 });

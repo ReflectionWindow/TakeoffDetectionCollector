@@ -68,7 +68,7 @@ describe("imported raster overlay", () => {
 });
 
 describe("bake fills and dots", () => {
-  it("explodes fill outlines and keeps isolated points as endpoints", () => {
+  it("does not explode bulky fills and keeps isolated ticks as endpoints only", () => {
     const vectors: PageVectorsResponse = {
       job_id: "j",
       page_index: 0,
@@ -97,11 +97,10 @@ describe("bake fills and dots", () => {
     };
     const index = bakeGeometryIndex(vectors);
     expect(index).not.toBeNull();
-    expect(index!.segments.length).toBe(4);
+    expect(index!.segments).toHaveLength(0);
     expect(index!.fills).toHaveLength(1);
     expect(index!.fills[0]!.points).toHaveLength(4);
-    expect(index!.dots.some((p) => p.x === 50 && p.y === 50)).toBe(true);
-    expect(index!.dots.some((p) => Math.abs(p.x - 20) < 0.01 && Math.abs(p.y - 15) < 0.01)).toBe(false);
+    expect(index!.dots.some((p) => p.x === 50 && p.y === 50)).toBe(false);
     expect(index!.endpoints.some((e) => e.p.x === 50 && e.p.y === 50)).toBe(true);
     expect(index!.empty).toBe(false);
   });

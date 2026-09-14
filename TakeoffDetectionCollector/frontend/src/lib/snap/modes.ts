@@ -1,6 +1,6 @@
 /** Snap mode candidate generators (PNG space). */
 
-import { dist, nearestOnSegment, segmentIntersection, unitDir } from "./math";
+import { dist, nearestOnSegment, segmentInteriorIntersection, unitDir } from "./math";
 import { isSegmentAllowed } from "./lock";
 import { queryEndpointIds, querySegmentIds } from "./spatial";
 import type {
@@ -69,15 +69,6 @@ export function collectEndpointHits(
   lock: LockState,
 ): SnapHit[] {
   const hits: SnapHit[] = [];
-  // Overlay ticks (isolated PDF crosses/dots) sit on exact PNG coords and
-  // must compete with line endpoints, not be skipped.
-  if (lock.kind !== "segment") {
-    for (const p of index.dots ?? []) {
-      const d = dist(cursor, p);
-      if (d > radiusPx) continue;
-      hits.push(hitBase("endpoint", p, cursor, zoom));
-    }
-  }
   const ids = queryEndpointIds(index.spatial, cursor.x, cursor.y, radiusPx);
   for (const id of ids) {
     const ep = index.spatial.endpointsById.get(id);
@@ -172,7 +163,7 @@ export function collectIntersectionHits(
     for (const b of others) {
       if (pairs >= INTERSECTION_PAIR_CAP) break;
       pairs += 1;
-      const p = segmentIntersection(a.a, a.b, b.a, b.b);
+      const p = segmentInteriorIntersection(a.a, a.b, b.a, b.b);
       if (!p) continue;
       const d = dist(cursor, p);
       if (d > radiusPx) continue;

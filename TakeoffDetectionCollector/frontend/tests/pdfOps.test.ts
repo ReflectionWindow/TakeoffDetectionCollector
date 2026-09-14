@@ -28,6 +28,9 @@ const OPS: PdfVectorOps = {
   paintFormXObjectEnd: 75,
   beginGroup: 76,
   endGroup: 77,
+  setLineWidth: 2,
+  setDash: 6,
+  setGState: 9,
 };
 
 function identity(x: number, y: number) {
@@ -142,5 +145,44 @@ describe("walkPdfOps", () => {
       400,
     );
     expect(out.fills[0]!.slice(0, 2)).toEqual([100, 10]);
+  });
+
+  it("offsets a fat stroke to the ink edges, not the centerline", () => {
+    const out = walkPdfOps(
+      [OPS.setLineWidth, OPS.constructPath, OPS.stroke],
+      [ [2], [[OPS.moveTo, OPS.lineTo], [50, 50, 80, 50], [50, 50, 80, 50]], null ],
+      OPS,
+      identity,
+      400,
+      400,
+    );
+    expect(out.lines).toHaveLength(2);
+    expect(out.lines.some((l) => l[1] === 50 && l[3] === 50)).toBe(false);
+    expect(out.lines.some((l) => l[1] === 51 && l[3] === 51)).toBe(true);
+    expect(out.lines.some((l) => l[1] === 49 && l[3] === 49)).toBe(true);
+  });
+
+  it("drops dashed strokes", () => {
+    const out = walkPdfOps(
+      [OPS.setDash, OPS.constructPath, OPS.stroke],
+      [ [[3, 2], 0], [[OPS.moveTo, OPS.lineTo], [50, 50, 80, 50], [50, 50, 80, 50]], null ],
+      OPS,
+      identity,
+      400,
+      400,
+    );
+    expect(out.lines).toHaveLength(0);
+  });
+
+  it("drops a hairline that spans the page", () => {
+    const out = walkPdfOps(
+      [OPS.setLineWidth, OPS.constructPath, OPS.stroke],
+      [ [0.5], [[OPS.moveTo, OPS.lineTo], [0, 10, 400, 10], [0, 10, 400, 10]], null ],
+      OPS,
+      identity,
+      400,
+      400,
+    );
+    expect(out.lines).toHaveLength(0);
   });
 });

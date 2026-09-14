@@ -111,7 +111,10 @@ export type GeometryIndex = {
   segmentById: Map<SegmentId, Segment>;
   /** Color-fill polygons (PNG), separate from exploded snap edges. */
   fills: FillPoly[];
-  /** Isolated vertices / ticks from the PDF `points[]` bucket. */
+  /**
+   * Overlay dots only: corners / T-junctions (endpoint degree ≥ 2) and
+   * interior crossings. Dead-end endpoints and isolated ticks are omitted.
+   */
   dots: Point[];
   dimTexts: DimTextPng[];
   empty: boolean;

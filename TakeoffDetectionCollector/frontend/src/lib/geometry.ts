@@ -228,7 +228,10 @@ export function removeVertex(points: PolyPoint[], index: number): PolyPoint[] {
   return next;
 }
 
-/** True when the shape is still an axis-aligned rectangle. */
+/** Pixel slack for Bluebeam's hundredths-of-a-point rectangle vertices. */
+export const NEAR_AXIS_PX = 1.5;
+
+/** True when every edge is horizontal or vertical within `epsilon`. */
 export function isRectangle(points: PolyPoint[], epsilon = 0.01): boolean {
   if (points.length !== 4) return false;
   for (let i = 0; i < 4; i++) {

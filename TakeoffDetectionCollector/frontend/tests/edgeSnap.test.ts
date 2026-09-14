@@ -180,6 +180,31 @@ describe("snapModelBoxes", () => {
     expect(boxes[0]).toEqual(source);
   });
 
+  it("squares Bluebeam vertex jitter and uses edge snap, not independent corners", () => {
+    const index = indexFromLines([[50, 20, 50, 100]]);
+    const noisy = box({
+      box_id: "pw",
+      x1: 103.2,
+      y1: 50,
+      x2: 180,
+      y2: 180,
+      points: [
+        { x: 103.2, y: 50.4 },
+        { x: 180.1, y: 50.1 },
+        { x: 179.8, y: 180.2 },
+        { x: 102.9, y: 179.7 },
+      ],
+    });
+    const { boxes, changed } = snapModelBoxes([noisy], index);
+    expect(changed).toBe(true);
+    expect(boxes[0]!.x1).toBeCloseTo(100, 5);
+    expect(boxes[0]!.points).toHaveLength(4);
+    const xs = new Set(boxes[0]!.points!.map((p) => p.x));
+    const ys = new Set(boxes[0]!.points!.map((p) => p.y));
+    expect(xs.size).toBe(2);
+    expect(ys.size).toBe(2);
+  });
+
   it("does not auto-correct user-drawn or already-edited boxes", () => {
     const index = indexFromLines([[50, 20, 50, 100]]);
     const user = box({

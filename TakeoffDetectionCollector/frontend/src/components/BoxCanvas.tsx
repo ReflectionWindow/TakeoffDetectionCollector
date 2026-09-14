@@ -7,10 +7,13 @@ import {
   edgeMidpoints,
   insertVertex,
   isDrawGesture,
+  isRectangle,
   MIN_POLY_POINTS,
+  NEAR_AXIS_PX,
   nearestEdge,
   nearestMidpoint,
   nearestVertex,
+  normalizeRect,
   pointInPolygon,
   pointsOf,
   quadFromRect,
@@ -31,16 +34,25 @@ import {
 import {
   DEFAULT_ADJUST_SNAP,
   EDGE_SNAP_CAPTURE_PX,
+  EDGE_SNAP_RELEASE_PX,
   activeSnapMark,
+  edgeHitToSnapHit,
+  emptyMoveLock,
+  lockFromHit,
   overlayViewRect,
   queryAdjustSnap,
-  querySnap,
+  snapMoveRect,
+  snapRectEdges,
   snapResizeEdges,
   VECTOR_OVERLAY_COLOR,
   vectorOverlayPaths,
   type ActiveSnapMark,
   type AdjustSnap,
+  type BoxEdge,
+  type EdgeLock,
   type GeometryIndex,
+  type LockState,
+  type MoveLock,
 } from "../lib/snap";
 import { MAX_ZOOM, MIN_ZOOM, applyWheel, fitTransform, zoomAbout, type Viewport } from "../lib/viewport";
 import { duplicateBoxes } from "../lib/boxCopy";
@@ -67,18 +79,18 @@ function aabbOf(pts: PolyPoint[]): Rect {
 
 /** Map a quad edge to an AABB handle so drag uses parallel-edge snap, not nearest-point. */
 function polyEdgeAsHandle(pts: PolyPoint[], index: number): ResizeHandle | null {
-  if (pts.length !== 4) return null;
+  if (!isRectangle(pts, NEAR_AXIS_PX)) return null;
   const a = pts[index]!;
   const b = pts[(index + 1) % pts.length]!;
   const dx = Math.abs(a.x - b.x);
   const dy = Math.abs(a.y - b.y);
-  if (dx < 1e-3 && dy > 1e-3) {
+  if (dx <= NEAR_AXIS_PX && dy > NEAR_AXIS_PX) {
     const minX = Math.min(pts[0]!.x, pts[1]!.x, pts[2]!.x, pts[3]!.x);
-    return Math.abs(a.x - minX) < 1e-3 ? "w" : "e";
+    return Math.abs(a.x - minX) <= NEAR_AXIS_PX ? "w" : "e";
   }
-  if (dy < 1e-3 && dx > 1e-3) {
+  if (dy <= NEAR_AXIS_PX && dx > NEAR_AXIS_PX) {
     const minY = Math.min(pts[0]!.y, pts[1]!.y, pts[2]!.y, pts[3]!.y);
-    return Math.abs(a.y - minY) < 1e-3 ? "n" : "s";
+    return Math.abs(a.y - minY) <= NEAR_AXIS_PX ? "n" : "s";
   }
   return null;
 }
@@ -161,11 +173,12 @@ export default function BoxCanvas({
   const [liveBlackouts, setLiveBlackouts] = useState<BlackoutRegion[] | null>(null);
   const [spaceDown, setSpaceDown] = useState(false);
   const dragRef = useRef<
-    | { kind: "draw" | "blackout"; x: number; y: number }
-    | { kind: "move"; id: string; x: number; y: number; points: PolyPoint[] }
-    | { kind: "copy-move"; x: number; y: number; copies: Box[]; base: Box[]; sourceIds: string[] }
+    | { kind: "draw"; x: number; y: number; locks: Partial<Record<BoxEdge, EdgeLock>> }
+    | { kind: "blackout"; x: number; y: number }
+    | { kind: "move"; id: string; x: number; y: number; points: PolyPoint[]; lock: MoveLock }
+    | { kind: "copy-move"; x: number; y: number; copies: Box[]; base: Box[]; sourceIds: string[]; lock: MoveLock }
     | { kind: "vertex"; id: string; index: number; points: PolyPoint[] }
-    | { kind: "edge"; id: string; index: number; x: number; y: number; points: PolyPoint[] }
+    | { kind: "edge"; id: string; index: number; x: number; y: number; points: PolyPoint[]; locks: Partial<Record<BoxEdge, EdgeLock>> }
     | { kind: "blackout-move"; index: number; x: number; y: number; region: BlackoutRegion }
     | { kind: "blackout-resize"; index: number; handle: ResizeHandle; x: number; y: number; region: BlackoutRegion }
     | { kind: "marquee"; x: number; y: number; additive: boolean }
@@ -176,6 +189,7 @@ export default function BoxCanvas({
   const previewRef = useRef<Box[] | null>(null);
   const liveBlackoutsRef = useRef<BlackoutRegion[] | null>(null);
   const hoverRef = useRef<PolyPoint | null>(null);
+  const polyLockRef = useRef<LockState>({ kind: "none" });
   const snapRafRef = useRef(0);
   const sizeRef = useRef({ imageWidth, imageHeight });
   sizeRef.current = { imageWidth, imageHeight };
@@ -231,6 +245,7 @@ export default function BoxCanvas({
       if ((e.key === "Enter" || e.key === "Escape") && draftPoly.length) {
         if (e.key === "Enter" && draftPoly.length >= 3) commitPoly(draftPoly);
         setDraftPoly([]);
+        polyLockRef.current = { kind: "none" };
       }
     };
     const up = (e: KeyboardEvent) => {
@@ -262,12 +277,16 @@ export default function BoxCanvas({
     setSnapMark(activeSnapMark(hit, geometryIndex));
   }
 
-  function snapPoint(p: PolyPoint, bypass: boolean): PolyPoint {
+  function snapPoint(p: PolyPoint, bypass: boolean, p1?: PolyPoint): PolyPoint {
     if ((!snap.point && !snap.line) || !geometryIndex) {
       if (bypass) setSnapMark(null);
       return p;
     }
-    const hit = queryAdjustSnap(geometryIndex, p, viewRef.current.zoom, bypass, snap);
+    const hit = queryAdjustSnap(geometryIndex, p, viewRef.current.zoom, bypass, snap, {
+      p1,
+      phase: p1 ? "p2" : "idle",
+      lock: p1 ? polyLockRef.current : { kind: "none" },
+    });
     showSnap(hit);
     return hit?.point ?? p;
   }
@@ -373,7 +392,14 @@ export default function BoxCanvas({
         return;
       }
       const z = viewRef.current.zoom;
-      showSnap(queryAdjustSnap(geometryIndex, cursor, z, false, snap));
+      const p1 = draftPoly.length ? draftPoly[draftPoly.length - 1] : undefined;
+      showSnap(
+        queryAdjustSnap(geometryIndex, cursor, z, false, snap, {
+          p1,
+          phase: p1 ? "p2" : "idle",
+          lock: p1 ? polyLockRef.current : { kind: "none" },
+        }),
+      );
     });
   }
 
@@ -437,14 +463,21 @@ export default function BoxCanvas({
             copies,
             base: boxes,
             sourceIds: source.map((b) => b.box_id),
+            lock: emptyMoveLock(),
           };
           setLive([...boxes, ...copies]);
           return;
         }
       }
     }
-    if (tool === "draw" || tool === "blackout") {
-      dragRef.current = { kind: tool, x: p.x, y: p.y };
+    if (tool === "draw") {
+      const origin = snapPoint(p, e.altKey);
+      dragRef.current = { kind: "draw", x: origin.x, y: origin.y, locks: {} };
+      setDraftRect({ x1: origin.x, y1: origin.y, x2: origin.x, y2: origin.y });
+      return;
+    }
+    if (tool === "blackout") {
+      dragRef.current = { kind: "blackout", x: p.x, y: p.y };
       setDraftRect({ x1: p.x, y1: p.y, x2: p.x, y2: p.y });
       return;
     }
@@ -467,7 +500,7 @@ export default function BoxCanvas({
       }
       const ei = nearestEdge(p, pts, hitPx);
       if (ei >= 0) {
-        dragRef.current = { kind: "edge", id: selected.box_id, index: ei, x: p.x, y: p.y, points: pts };
+        dragRef.current = { kind: "edge", id: selected.box_id, index: ei, x: p.x, y: p.y, points: pts, locks: {} };
         return;
       }
     }
@@ -476,7 +509,7 @@ export default function BoxCanvas({
       if (multiSelect && e.shiftKey) onSelectedIds(toggleId(selectedIds, hit.box_id));
       else onSelectedIds([hit.box_id]);
       if (!geometryLocked) {
-        dragRef.current = { kind: "move", id: hit.box_id, x: p.x, y: p.y, points: pointsOf(hit) };
+        dragRef.current = { kind: "move", id: hit.box_id, x: p.x, y: p.y, points: pointsOf(hit), lock: emptyMoveLock() };
         return;
       }
       dragRef.current = null;
@@ -533,13 +566,24 @@ export default function BoxCanvas({
       });
       return;
     }
-    if (drag.kind === "draw" || drag.kind === "blackout") {
+    if (drag.kind === "draw") {
       let rect: Rect = { x1: drag.x, y1: drag.y, x2: p.x, y2: p.y };
-      if (drag.kind === "draw" && snap.point) {
-        const hit = snapPoint({ x: p.x, y: p.y }, bypass);
-        rect = { ...rect, x2: hit.x, y2: hit.y };
+      if (snapping && geometryIndex && !bypass) {
+        const out = snapRectEdges(normalizeRect(rect.x1, rect.y1, rect.x2, rect.y2), geometryIndex, EDGE_SNAP_CAPTURE_PX, {
+          zoom: z,
+          locks: drag.locks,
+          releaseRadiusPx: EDGE_SNAP_RELEASE_PX,
+        });
+        drag.locks = out.locks;
+        rect = out.rect;
+        const hit = out.hits[0];
+        showSnap(hit ? edgeHitToSnapHit(hit, z) : null);
       }
       setDraftRect(rect);
+      return;
+    }
+    if (drag.kind === "blackout") {
+      setDraftRect({ x1: drag.x, y1: drag.y, x2: p.x, y2: p.y });
       return;
     }
     if (drag.kind === "marquee") {
@@ -565,7 +609,19 @@ export default function BoxCanvas({
     if (drag.kind === "move" || drag.kind === "copy-move") {
       const dx = p.x - drag.x;
       const dy = p.y - drag.y;
-      const shiftPts = (pts: PolyPoint[]) => {
+      const shiftPts = (pts: PolyPoint[], lock: MoveLock): { pts: PolyPoint[]; lock: MoveLock } => {
+        if (snapping && geometryIndex && isRectangle(pts, NEAR_AXIS_PX)) {
+          const start = aabbOf(pts);
+          const out = snapMoveRect(
+            { x1: start.x1 + dx, y1: start.y1 + dy, x2: start.x2 + dx, y2: start.y2 + dy },
+            geometryIndex,
+            EDGE_SNAP_CAPTURE_PX,
+            { zoom: z, lock, releaseRadiusPx: EDGE_SNAP_RELEASE_PX, bypass },
+          );
+          const hit = out.hits[0];
+          showSnap(hit ? edgeHitToSnapHit(hit, z) : null);
+          return { pts: quadFromRect(out.rect), lock: out.lock };
+        }
         let next = pts.map((pt) => ({ x: pt.x + dx, y: pt.y + dy }));
         if ((snap.point || snap.line) && geometryIndex) {
           let best: { dx: number; dy: number; d: number; hit: NonNullable<ReturnType<typeof queryAdjustSnap>> } | null = null;
@@ -581,15 +637,36 @@ export default function BoxCanvas({
             showSnap(best.hit);
           } else showSnap(null);
         }
-        return next;
+        return { pts: next, lock };
       };
       if (drag.kind === "copy-move") {
-        const moved = drag.copies.map((b) => withAABB({ ...b, edited: true, origin: "user" as const }, shiftPts(pointsOf(b))));
+        const first = drag.copies[0];
+        if (!first) return;
+        const origin = aabbOf(pointsOf(first));
+        const shifted = shiftPts(pointsOf(first), drag.lock);
+        drag.lock = shifted.lock;
+        const next = aabbOf(shifted.pts);
+        const ndx = next.x1 - origin.x1;
+        const ndy = next.y1 - origin.y1;
+        const moved = drag.copies.map((b) => {
+          if (isRectangle(pointsOf(b), NEAR_AXIS_PX)) {
+            const start = aabbOf(pointsOf(b));
+            return withAABB(
+              { ...b, edited: true, origin: "user" as const },
+              quadFromRect({ x1: start.x1 + ndx, y1: start.y1 + ndy, x2: start.x2 + ndx, y2: start.y2 + ndy }),
+            );
+          }
+          return withAABB(
+            { ...b, edited: true, origin: "user" as const },
+            pointsOf(b).map((pt) => ({ x: pt.x + ndx, y: pt.y + ndy })),
+          );
+        });
         setLive([...drag.base, ...moved]);
         return;
       }
-      const pts = shiftPts(drag.points);
-      setLive(shown.map((b) => (b.box_id === drag.id ? withAABB({ ...b, edited: true, origin: "user" as const }, pts) : b)));
+      const shifted = shiftPts(drag.points, drag.lock);
+      drag.lock = shifted.lock;
+      setLive(shown.map((b) => (b.box_id === drag.id ? withAABB({ ...b, edited: true, origin: "user" as const }, shifted.pts) : b)));
       return;
     }
     if (drag.kind === "vertex") {
@@ -606,33 +683,19 @@ export default function BoxCanvas({
       if (snap.line && geometryIndex && !bypass) {
         const handle = polyEdgeAsHandle(drag.points, i0);
         if (handle) {
-          const out = snapResizeEdges(aabbOf(pts), handle, geometryIndex, EDGE_SNAP_CAPTURE_PX, { zoom: z });
+          const out = snapResizeEdges(aabbOf(pts), handle, geometryIndex, EDGE_SNAP_CAPTURE_PX, {
+            zoom: z,
+            locks: drag.locks,
+            releaseRadiusPx: EDGE_SNAP_RELEASE_PX,
+          });
+          drag.locks = out.locks;
           pts = quadFromRect(out.rect);
           const edgeHit = out.hits[0];
-          showSnap(
-            edgeHit
-              ? {
-                  mode: "nearest",
-                  point: edgeHit.point,
-                  distPx: edgeHit.distPx,
-                  screenDistPx: edgeHit.distPx * z,
-                  segmentId: edgeHit.segmentId,
-                  guide: { kind: "segment", a: edgeHit.segment.a, b: edgeHit.segment.b },
-                }
-              : null,
-          );
+          showSnap(edgeHit ? edgeHitToSnapHit(edgeHit, z) : null);
         } else {
           const a = pts[i0]!;
           const mid = { x: (a.x + pts[i1]!.x) / 2, y: (a.y + pts[i1]!.y) / 2 };
-          const hit = querySnap({
-            index: geometryIndex,
-            cursor: mid,
-            radiusScreenPx: EDGE_SNAP_CAPTURE_PX,
-            zoom: z,
-            phase: "idle",
-            lock: { kind: "none" },
-            bypass,
-          });
+          const hit = queryAdjustSnap(geometryIndex, mid, z, bypass, snap);
           showSnap(hit);
           if (hit) {
             const ox = hit.point.x - mid.x;
@@ -688,18 +751,27 @@ export default function BoxCanvas({
       return;
     }
     if (drag.kind === "draw" && draftRect) {
-      if (isDrawGesture(drag.x, drag.y, draftRect.x2, draftRect.y2, viewRef.current.zoom)) {
-        const a = snapPoint({ x: draftRect.x1, y: draftRect.y1 }, e.altKey);
-        const b = snapPoint({ x: draftRect.x2, y: draftRect.y2 }, e.altKey);
-        commitPoly(quadFromRect({ x1: a.x, y1: a.y, x2: b.x, y2: b.y }));
+      if (isDrawGesture(draftRect.x1, draftRect.y1, draftRect.x2, draftRect.y2, viewRef.current.zoom)) {
+        commitPoly(quadFromRect(draftRect));
         setDraftPoly([]);
+        polyLockRef.current = { kind: "none" };
       } else if (tool === "draw") {
-        const p = snapPoint({ x: draftRect.x2, y: draftRect.y2 }, e.altKey);
+        const p1 = draftPoly[draftPoly.length - 1];
+        const p = snapPoint({ x: draftRect.x2, y: draftRect.y2 }, e.altKey, p1);
+        const hit = geometryIndex
+          ? queryAdjustSnap(geometryIndex, p, viewRef.current.zoom, e.altKey, snap, {
+              p1,
+              phase: p1 ? "p2" : "idle",
+              lock: p1 ? polyLockRef.current : { kind: "none" },
+            })
+          : null;
+        polyLockRef.current = lockFromHit(hit);
         if (draftPoly.length >= 3) {
           const first = draftPoly[0]!;
           if (Math.hypot(p.x - first.x, p.y - first.y) * viewRef.current.zoom <= 10) {
             commitPoly(draftPoly);
             setDraftPoly([]);
+            polyLockRef.current = { kind: "none" };
             setDraftRect(null);
             e.stopPropagation();
             return;
@@ -787,16 +859,6 @@ export default function BoxCanvas({
               fill="none"
               stroke={VECTOR_OVERLAY_COLOR}
               strokeWidth={1.25 / zoom}
-              strokeLinecap="square"
-            />
-          ) : null}
-          {vectorOverlay?.crosses ? (
-            <path
-              className="vector-overlay"
-              d={vectorOverlay.crosses}
-              fill="none"
-              stroke={VECTOR_OVERLAY_COLOR}
-              strokeWidth={1.4 / zoom}
               strokeLinecap="square"
             />
           ) : null}

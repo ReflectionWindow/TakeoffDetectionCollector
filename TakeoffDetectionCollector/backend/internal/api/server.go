@@ -332,6 +332,17 @@ func (s *Server) persistImport(ctx context.Context, imp coco.JobImport, u auth.U
 		}, payload); err != nil {
 			return store.Job{}, err
 		}
+		if regions := imp.Blackouts[p.PageIndex]; len(regions) > 0 {
+			existing, err := s.store.GetBlackouts(ctx, job.ID, p.PageIndex)
+			if err != nil {
+				return store.Job{}, err
+			}
+			if len(existing) == 0 {
+				if err := s.store.SaveBlackouts(ctx, job.ID, p.PageIndex, regions); err != nil {
+					return store.Job{}, err
+				}
+			}
+		}
 	}
 	return s.store.GetJob(ctx, job.ID)
 }
@@ -356,14 +367,7 @@ func unzipCoco(data []byte) ([]coco.JobImport, error) {
 		if err != nil {
 			continue
 		}
-		parts := strings.Split(strings.Trim(name, "/"), "/")
-		slug := "job"
-		for i, p := range parts {
-			if p == "coarse" && i > 0 {
-				slug = parts[i-1]
-				break
-			}
-		}
+		slug := coco.SlugFromAnnotPath(name)
 		imp, err := coco.Parse(raw, slug)
 		if err != nil {
 			continue
@@ -563,6 +567,12 @@ func (s *Server) importJobs(w http.ResponseWriter, r *http.Request, u auth.User)
 		"jobs":     imported,
 		"errors":   errs,
 	})
+}
+
+// ImportBluebeamJob creates a job from a marked-up elevation PDF (markups
+// become boxes; Bluebeam annotations are stripped from the stored file).
+func (s *Server) ImportBluebeamJob(ctx context.Context, projectID, slug string, data []byte) (store.Job, error) {
+	return s.persistBluebeamJob(ctx, auth.User{}, projectID, slug, data)
 }
 
 func (s *Server) persistBluebeamJob(ctx context.Context, u auth.User, projectID, slug string, data []byte) (store.Job, error) {
@@ -803,7 +813,19 @@ func (s *Server) getPDF(w http.ResponseWriter, r *http.Request, _ auth.User) {
 func (s *Server) getAnnotations(w http.ResponseWriter, r *http.Request, _ auth.User) {
 	jobID := r.PathValue("id")
 	n, _ := strconv.Atoi(r.PathValue("n"))
-	rev, payload, err := s.store.LatestRevision(r.Context(), jobID, n)
+	var rev store.Revision
+	var payload store.AnnotationPayload
+	var err error
+	if raw := r.URL.Query().Get("version"); raw != "" {
+		v, convErr := strconv.Atoi(raw)
+		if convErr != nil {
+			http.Error(w, "invalid version", 400)
+			return
+		}
+		rev, payload, err = s.store.GetRevision(r.Context(), jobID, n, v)
+	} else {
+		rev, payload, err = s.store.LatestRevision(r.Context(), jobID, n)
+	}
 	if err != nil {
 		http.Error(w, err.Error(), 404)
 		return

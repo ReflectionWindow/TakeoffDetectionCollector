@@ -47,6 +47,53 @@ func TestParseAndExport(t *testing.T) {
 	}
 }
 
+func TestParseBlackoutsAndPageFileName(t *testing.T) {
+	raw := []byte(`{
+	  "images":[
+	    {"id":0,"file_name":"page_0005.png","width":1000,"height":500},
+	    {"id":1,"file_name":"data_v2_coco_job_coarse_images_page_0001.png","width":2000,"height":1000}
+	  ],
+	  "categories":[{"id":1,"name":"CW"},{"id":4,"name":"blackout"}],
+	  "annotations":[
+	    {"id":1,"image_id":0,"category_id":1,"bbox":[100,50,20,10]},
+	    {"id":2,"image_id":0,"category_id":4,"bbox":[100,50,300,150]},
+	    {"id":3,"image_id":1,"category_id":4,"bbox":[0,0,1000,200]}
+	  ]
+	}`)
+	imp, err := Parse(raw, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(imp.Pages) != 2 {
+		t.Fatalf("pages=%d", len(imp.Pages))
+	}
+	if len(imp.ByPage[5]) != 1 || imp.ByPage[5][0].Class != "CW" {
+		t.Fatalf("opening boxes %+v", imp.ByPage)
+	}
+	if len(imp.ByPage[1]) != 0 {
+		t.Fatalf("blackout leaked into boxes %+v", imp.ByPage[1])
+	}
+	r5 := imp.Blackouts[5]
+	if len(r5) != 1 || r5[0].X1 != 0.1 || r5[0].Y1 != 0.1 || r5[0].X2 != 0.4 || r5[0].Y2 != 0.4 {
+		t.Fatalf("page 5 blackouts %+v", r5)
+	}
+	r1 := imp.Blackouts[1]
+	if len(r1) != 1 || r1[0].X1 != 0 || r1[0].Y1 != 0 || r1[0].X2 != 0.5 || r1[0].Y2 != 0.2 {
+		t.Fatalf("page 1 blackouts %+v", r1)
+	}
+}
+
+func TestSlugFromAnnotPath(t *testing.T) {
+	got := SlugFromAnnotPath("review/verve_south_miami/train/_annotations.coco.json")
+	if got != "verve_south_miami" {
+		t.Fatal(got)
+	}
+	got = SlugFromAnnotPath("coco/uih/coarse/_annotations.coco.json")
+	if got != "uih" {
+		t.Fatal(got)
+	}
+}
+
 func TestParseSegmentation(t *testing.T) {
 	raw := []byte(`{
 	  "images":[{"id":1,"file_name":"page_0000.png","width":3600,"height":2700,"page_index":0}],

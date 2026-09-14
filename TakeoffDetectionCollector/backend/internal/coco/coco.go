@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
+	"github.com/StephenLiRWW/TakeoffDetectionCollector/internal/blackout"
 	"github.com/StephenLiRWW/TakeoffDetectionCollector/internal/coords"
 	"github.com/StephenLiRWW/TakeoffDetectionCollector/internal/store"
 )
@@ -44,11 +47,43 @@ type Annotation struct {
 }
 
 type JobImport struct {
-	Slug   string
-	Title  string
-	Pages  []store.Page
-	ByPage map[int][]store.Box
-	Raw    []byte
+	Slug      string
+	Title     string
+	Pages     []store.Page
+	ByPage    map[int][]store.Box
+	Blackouts map[int][]blackout.Region
+	Raw       []byte
+}
+
+var pageFileRe = regexp.MustCompile(`(?i)page_(\d+)(?:\.[A-Za-z0-9]+)?$`)
+
+func IsBlackoutClass(name string) bool {
+	return strings.EqualFold(strings.TrimSpace(name), "blackout")
+}
+
+// PageIndexFromFileName reads the 0-based sheet index from names like
+// page_0005.png or ..._coarse_images_page_0001.png. Roboflow drops page_index.
+func PageIndexFromFileName(name string) (int, bool) {
+	base := filepath.Base(filepath.ToSlash(name))
+	m := pageFileRe.FindStringSubmatch(base)
+	if m == nil {
+		return 0, false
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+func resolvePageIndex(im Image, fallback int) int {
+	if n, ok := PageIndexFromFileName(im.FileName); ok {
+		return n
+	}
+	if im.PageIndex != 0 {
+		return im.PageIndex
+	}
+	return fallback
 }
 
 func LoadFile(path string) (File, error) {
@@ -75,6 +110,7 @@ func Parse(data []byte, slug string) (JobImport, error) {
 	img := map[int]Image{}
 	pages := map[int]store.Page{}
 	for _, im := range f.Images {
+		im.PageIndex = resolvePageIndex(im, im.PageIndex)
 		img[im.ID] = im
 		wPt, hPt := coords.PagePtFromPx75(im.Width, im.Height)
 		pages[im.PageIndex] = store.Page{
@@ -88,6 +124,7 @@ func Parse(data []byte, slug string) (JobImport, error) {
 		}
 	}
 	byPage := map[int][]store.Box{}
+	blackouts := map[int][]blackout.Region{}
 	for _, a := range f.Annotations {
 		var bbox [4]float64
 		if len(a.BBox) >= 4 {
@@ -109,6 +146,12 @@ func Parse(data []byte, slug string) (JobImport, error) {
 		if class == "" {
 			class = cat[a.CategoryID]
 		}
+		if IsBlackoutClass(class) {
+			if r, ok := regionFromAnnotation(a, im); ok {
+				blackouts[pageIndex] = append(blackouts[pageIndex], r)
+			}
+			continue
+		}
 		polyPt, polyPx, bPt, bPx := coords.FillBoxPolys(nil, polyPx, [4]float64{}, bbox)
 		byPage[pageIndex] = append(byPage[pageIndex], store.Box{
 			ID:          fmt.Sprintf("coco-%d", a.ID),
@@ -129,7 +172,65 @@ func Parse(data []byte, slug string) (JobImport, error) {
 	}
 	sort.Slice(pageList, func(i, j int) bool { return pageList[i].PageIndex < pageList[j].PageIndex })
 	title := strings.ReplaceAll(slug, "_", " ")
-	return JobImport{Slug: slug, Title: title, Pages: pageList, ByPage: byPage, Raw: data}, nil
+	return JobImport{Slug: slug, Title: title, Pages: pageList, ByPage: byPage, Blackouts: blackouts, Raw: data}, nil
+}
+
+func regionFromAnnotation(a Annotation, im Image) (blackout.Region, bool) {
+	w, h := float64(im.Width), float64(im.Height)
+	if w <= 0 || h <= 0 {
+		return blackout.Region{}, false
+	}
+	if len(a.BBox) >= 4 {
+		x1, y1 := a.BBox[0], a.BBox[1]
+		return blackout.Normalize(x1, y1, x1+a.BBox[2], y1+a.BBox[3], w, h)
+	}
+	if len(a.Segmentation) == 0 {
+		return blackout.Region{}, false
+	}
+	poly := coords.FlatToPoly(a.Segmentation[0])
+	bb := coords.BBoxFromPoly(poly)
+	return blackout.Normalize(bb[0], bb[1], bb[0]+bb[2], bb[1]+bb[3], w, h)
+}
+
+func isSplitDir(name string) bool {
+	switch name {
+	case "coarse", "train", "valid", "val", "test":
+		return true
+	default:
+		return false
+	}
+}
+
+func AnnotationFile(root, slug string) string {
+	for _, rel := range []string{
+		filepath.Join(slug, "coarse", "_annotations.coco.json"),
+		filepath.Join(slug, "train", "_annotations.coco.json"),
+		filepath.Join(slug, "valid", "_annotations.coco.json"),
+		filepath.Join(slug, "val", "_annotations.coco.json"),
+		filepath.Join(slug, "_annotations.coco.json"),
+	} {
+		p := filepath.Join(root, rel)
+		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+			return p
+		}
+	}
+	return ""
+}
+
+func SlugFromAnnotPath(name string) string {
+	parts := strings.Split(strings.Trim(filepath.ToSlash(name), "/"), "/")
+	for i, p := range parts {
+		if p != "_annotations.coco.json" {
+			continue
+		}
+		if i >= 2 && isSplitDir(parts[i-1]) {
+			return parts[i-2]
+		}
+		if i >= 1 {
+			return parts[i-1]
+		}
+	}
+	return "job"
 }
 
 func DiscoverJobs(root string) ([]string, error) {
@@ -142,8 +243,7 @@ func DiscoverJobs(root string) ([]string, error) {
 		if !e.IsDir() {
 			continue
 		}
-		p := filepath.Join(root, e.Name(), "coarse", "_annotations.coco.json")
-		if _, err := os.Stat(p); err == nil {
+		if AnnotationFile(root, e.Name()) != "" {
 			out = append(out, e.Name())
 		}
 	}
@@ -152,7 +252,10 @@ func DiscoverJobs(root string) ([]string, error) {
 }
 
 func LoadJobDir(root, slug string) (JobImport, error) {
-	path := filepath.Join(root, slug, "coarse", "_annotations.coco.json")
+	path := AnnotationFile(root, slug)
+	if path == "" {
+		return JobImport{}, fmt.Errorf("no COCO annotations for %s", slug)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return JobImport{}, err

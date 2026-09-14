@@ -17,6 +17,9 @@ export interface Box {
   blackout?: boolean | null;
 }
 
+
+
+
 export interface PageVectorsSegments {
   lines: number[][];
   rects: number[][];

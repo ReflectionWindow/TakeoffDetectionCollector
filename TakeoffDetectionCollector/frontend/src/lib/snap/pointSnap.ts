@@ -3,10 +3,11 @@
 import type { Rect, ResizeHandle } from "../geometry";
 import { EDGE_SNAP_CAPTURE_PX } from "./edgeSnap";
 import { querySnap } from "./query";
-import type { GeometryIndex, Point, SnapHit, SnapMode } from "./types";
+import type { GeometryIndex, LockState, Point, SnapHit, SnapMode, SnapPhase } from "./types";
 
 export const POINT_SNAP_MODES: readonly SnapMode[] = ["endpoint", "intersection", "midpoint"];
 export const LINE_SNAP_MODES: readonly SnapMode[] = ["nearest"];
+export const P1_SNAP_MODES: readonly SnapMode[] = ["perpendicular", "ortho", "parallel"];
 
 export type AdjustSnap = {
   line: boolean;
@@ -19,6 +20,7 @@ export function enabledAdjustModes(adjust: AdjustSnap): SnapMode[] {
   const modes: SnapMode[] = [];
   if (adjust.point) modes.push(...POINT_SNAP_MODES);
   if (adjust.line) modes.push(...LINE_SNAP_MODES);
+  if (adjust.point || adjust.line) modes.push(...P1_SNAP_MODES);
   return modes;
 }
 
@@ -37,6 +39,7 @@ export function queryAdjustSnap(
   zoom: number,
   bypass: boolean,
   adjust: AdjustSnap,
+  extra?: { p1?: Point; phase?: SnapPhase; lock?: LockState },
 ): SnapHit | null {
   const enabledModes = enabledAdjustModes(adjust);
   if (!index || index.empty || bypass || !enabledModes.length) return null;
@@ -45,8 +48,9 @@ export function queryAdjustSnap(
     cursor,
     radiusScreenPx: EDGE_SNAP_CAPTURE_PX,
     zoom,
-    phase: "idle",
-    lock: { kind: "none" },
+    phase: extra?.phase ?? (extra?.p1 ? "p2" : "idle"),
+    p1: extra?.p1,
+    lock: extra?.lock ?? { kind: "none" },
     enabledModes,
     bypass,
   });

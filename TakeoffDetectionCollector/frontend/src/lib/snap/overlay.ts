@@ -1,18 +1,17 @@
-/** Zoomed-in overlay of snap-able linework (strokes + geometry outlines) and ticks. */
+/** Zoomed-in overlay of kept PDF strokes and junction / crossing dots. */
 
 import type { FillPoly, GeometryIndex, Point, Segment, SnapHit } from "./types";
 
-/** Past fit-to-page; 100% (actual size) is well above this. */
-export const VECTOR_OVERLAY_MIN_ZOOM = 0.5;
+/** Past fit-to-page; actual size (100%) is well above this. */
+export const VECTOR_OVERLAY_MIN_ZOOM = 1.5;
 export const VECTOR_OVERLAY_COLOR = "#e11d48";
 
-const CROSS_SCREEN_PX = 4;
 const DOT_SCREEN_PX = 1.6;
 const VIEW_PAD_SCREEN = 24;
 const MIN_FILL_SCREEN_PX = 1;
 const MAX_OVERLAY_FILLS = 4000;
-const MAX_OVERLAY_DOTS = 8000;
-const MAX_OVERLAY_LINES = 8000;
+const MAX_OVERLAY_DOTS = 3000;
+const MAX_OVERLAY_LINES = 3000;
 
 export const FULL_OVERLAY_VIEW: OverlayView = {
   minX: Number.NEGATIVE_INFINITY,
@@ -67,11 +66,6 @@ function inView(p: Point, view: OverlayView): boolean {
   return p.x >= view.minX && p.x <= view.maxX && p.y >= view.minY && p.y <= view.maxY;
 }
 
-function crossPath(p: Point, arm: number): string {
-  const { x, y } = p;
-  return `M ${x - arm} ${y} L ${x + arm} ${y} M ${x} ${y - arm} L ${x} ${y + arm}`;
-}
-
 function dotPath(p: Point, r: number): string {
   const { x, y } = p;
   return `M ${x + r} ${y} A ${r} ${r} 0 1 0 ${x - r} ${y} A ${r} ${r} 0 1 0 ${x + r} ${y}`;
@@ -107,24 +101,19 @@ export function visibleDots(dots: Point[], view: OverlayView, cap = MAX_OVERLAY_
   return out;
 }
 
-function overlayTickPoints(index: GeometryIndex, view: OverlayView): Point[] {
-  return visibleDots(index.dots ?? [], view);
-}
-
-/** Combined SVG paths for in-view snap segments and ticks, or null when nothing to draw. */
+/** Combined SVG paths for in-view snap segments and junction dots, or null when nothing to draw. */
 export function vectorOverlayPaths(index: GeometryIndex, view: OverlayView, zoom: number): VectorOverlayPaths | null {
   if (!shouldShowVectorOverlay(zoom)) return null;
-  const ticks = overlayTickPoints(index, view);
+  const marks = visibleDots(index.dots ?? [], view);
   const segs = visibleSegments(index.segments, view);
-  if (!ticks.length && !segs.length) return null;
+  if (!marks.length && !segs.length) return null;
   const z = zoom > 1e-9 ? zoom : 1e-9;
-  const arm = CROSS_SCREEN_PX / z;
   const dotR = DOT_SCREEN_PX / z;
   return {
     fills: "",
     lines: segs.map((s) => `M ${s.a.x} ${s.a.y} L ${s.b.x} ${s.b.y}`).join(" "),
-    crosses: ticks.map((p) => crossPath(p, arm)).join(" "),
-    dots: ticks.map((p) => dotPath(p, dotR)).join(" "),
+    crosses: "",
+    dots: marks.map((p) => dotPath(p, dotR)).join(" "),
   };
 }
 

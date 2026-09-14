@@ -284,8 +284,10 @@ export async function fetchPdf(jobId: string): Promise<ArrayBuffer> {
 export async function getAnnotations(
   jobId: string,
   page: number,
+  version?: number,
 ): Promise<{ revision: Revision; payload: AnnotationPayload }> {
-  return request(`/v1/jobs/${jobId}/pages/${page}/annotations`);
+  const q = version != null ? `?version=${version}` : "";
+  return request(`/v1/jobs/${jobId}/pages/${page}/annotations${q}`);
 }
 
 export async function saveAnnotations(

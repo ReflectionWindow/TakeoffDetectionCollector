@@ -8,7 +8,10 @@
 import type { Box } from "../../api/types";
 import {
   MIN_BOX_SIZE,
+  isRectangle,
+  NEAR_AXIS_PX,
   pointsOf,
+  polygonAABB,
   quadFromRect,
   withAABB,
   type Rect,
@@ -661,13 +664,13 @@ export function snapModelBoxes(
   const next = boxes.map((box) => {
     if (!isModelUnedited(box) || isTiny(box)) return box;
     const pts = pointsOf(box);
-    if (!isAxisAlignedQuad(pts)) {
+    if (!isRectangle(pts, NEAR_AXIS_PX)) {
       const snapped = snapPolygonVertices(pts, index, bandPx);
       if (samePoints(pts, snapped)) return box;
       changed = true;
       return withAABB(box, snapped);
     }
-    const rect = { x1: box.x1, y1: box.y1, x2: box.x2, y2: box.y2 };
+    const rect = polygonAABB(pts);
     const assigned: Partial<Record<BoxEdge, number>> = {};
     const q = { minSize, maxSegToEdge: AUTO_SNAP_MAX_SEG_TO_EDGE };
     for (const edge of ALL_EDGES) {
@@ -675,18 +678,12 @@ export function snapModelBoxes(
       if (hit) assigned[edge] = hit.coord;
     }
     const nextRect = applyEdgeCoords(rect, assigned, minSize);
-    if (sameRect(rect, nextRect)) return withAABB(box, pts);
+    const aligned = quadFromRect(nextRect);
+    if (sameRect(rect, nextRect) && samePoints(pts, aligned)) return withAABB(box, pts);
     changed = true;
-    return withAABB({ ...box, ...nextRect }, quadFromRect(nextRect));
+    return withAABB({ ...box, ...nextRect }, aligned);
   });
   return { boxes: next, changed };
-}
-
-function isAxisAlignedQuad(pts: Point[]): boolean {
-  if (pts.length !== 4) return false;
-  const xs = new Set(pts.map((p) => p.x));
-  const ys = new Set(pts.map((p) => p.y));
-  return xs.size === 2 && ys.size === 2;
 }
 
 function samePoints(a: Point[], b: Point[]): boolean {

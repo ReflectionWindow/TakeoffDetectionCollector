@@ -41,27 +41,15 @@ func ExtractMarkups(pdf []byte) []PageMarkups {
 		if !pageObjRe.Match(obj.data) {
 			continue
 		}
-		w, h := 0.0, 0.0
-		if m := cropBoxRe.FindSubmatch(obj.data); len(m) == 5 {
-			w, h, _ = boxWH(m)
-		} else if m := mediaBoxRe.FindSubmatch(obj.data); len(m) == 5 {
-			w, h, _ = boxWH(m)
+		box, rot, ok := pageBoxFromObj(obj.data)
+		if !ok {
+			continue
 		}
-		userH := h
-		if rot := rotateRe.FindSubmatch(obj.data); len(rot) == 2 {
-			r, _ := strconv.Atoi(string(rot[1]))
-			r = ((r % 360) + 360) % 360
-			if r == 90 || r == 270 {
-				w, h = h, w
-			}
-		}
-		if userH == 0 {
-			userH = h
-		}
+		w, h := box.viewportSize(rot)
 		annots := pageAnnotObjects(obj.data, byNum)
 		var markups []Markup
 		for _, raw := range annots {
-			if m, ok := parseMarkup(raw, userH); ok {
+			if m, ok := parseMarkup(raw, box, rot); ok {
 				markups = append(markups, m)
 			}
 		}
@@ -120,7 +108,7 @@ func annotRefs(raw []byte) []int {
 	return out
 }
 
-func parseMarkup(obj []byte, pageHeight float64) (Markup, bool) {
+func parseMarkup(obj []byte, box pageBox, rotate int) (Markup, bool) {
 	sub := ""
 	if m := subtypeRe.FindSubmatch(obj); len(m) == 2 {
 		sub = string(m[1])
@@ -129,28 +117,28 @@ func parseMarkup(obj []byte, pageHeight float64) (Markup, bool) {
 	if !ok {
 		return Markup{}, false
 	}
-	poly := markupPoly(obj, sub, pageHeight)
+	poly := markupPoly(obj, sub, box, rotate)
 	if len(poly) < 3 {
 		return Markup{}, false
 	}
 	return Markup{Class: class, PolyPt: poly}, true
 }
 
-func markupPoly(obj []byte, subtype string, pageHeight float64) [][2]float64 {
+func markupPoly(obj []byte, subtype string, box pageBox, rotate int) [][2]float64 {
 	switch subtype {
 	case "Polygon", "PolyLine":
-		if verts := parseVertices(obj, pageHeight); len(verts) >= 3 {
+		if verts := parseVertices(obj, box, rotate); len(verts) >= 3 {
 			return verts
 		}
-		return rectPoly(obj, pageHeight)
+		return rectPoly(obj, box, rotate)
 	case "Square", "Circle":
-		return rectPoly(obj, pageHeight)
+		return rectPoly(obj, box, rotate)
 	default:
 		return nil
 	}
 }
 
-func parseVertices(obj []byte, pageHeight float64) [][2]float64 {
+func parseVertices(obj []byte, box pageBox, rotate int) [][2]float64 {
 	m := verticesRe.FindSubmatch(obj)
 	if len(m) != 2 {
 		return nil
@@ -163,12 +151,13 @@ func parseVertices(obj []byte, pageHeight float64) [][2]float64 {
 	for i := 0; i+1 < len(nums); i += 2 {
 		x, _ := strconv.ParseFloat(nums[i], 64)
 		y, _ := strconv.ParseFloat(nums[i+1], 64)
-		out = append(out, [2]float64{x, flipY(y, pageHeight)})
+		vx, vy := box.toViewport(x, y, rotate)
+		out = append(out, [2]float64{vx, vy})
 	}
-	return dropClose(out)
+	return squareUp(dropClose(out))
 }
 
-func rectPoly(obj []byte, pageHeight float64) [][2]float64 {
+func rectPoly(obj []byte, box pageBox, rotate int) [][2]float64 {
 	m := mediaBoxRe.FindSubmatch(bytes.Replace(obj, []byte("/Rect"), []byte("/MediaBox"), 1))
 	if len(m) != 5 {
 		rectRe := regexp.MustCompile(`/Rect\s*\[\s*([0-9.-]+)\s+([0-9.-]+)\s+([0-9.-]+)\s+([0-9.-]+)\s*\]`)
@@ -181,29 +170,71 @@ func rectPoly(obj []byte, pageHeight float64) [][2]float64 {
 	y0, _ := strconv.ParseFloat(string(m[2]), 64)
 	x1, _ := strconv.ParseFloat(string(m[3]), 64)
 	y1, _ := strconv.ParseFloat(string(m[4]), 64)
-	minX, maxX := x0, x1
-	if x1 < minX {
-		minX, maxX = x1, x0
+	corners := [][2]float64{{x0, y0}, {x1, y0}, {x1, y1}, {x0, y1}}
+	out := make([][2]float64, 4)
+	for i, p := range corners {
+		out[i][0], out[i][1] = box.toViewport(p[0], p[1], rotate)
 	}
-	minY, maxY := y0, y1
-	if y1 < minY {
-		minY, maxY = y1, y0
-	}
-	top := flipY(maxY, pageHeight)
-	h := maxY - minY
-	return [][2]float64{
-		{minX, top},
-		{maxX, top},
-		{maxX, top + h},
-		{minX, top + h},
-	}
+	return squareUp(out)
 }
 
-func flipY(y, pageHeight float64) float64 {
-	if pageHeight <= 0 {
-		return y
+// Bluebeam rectangle vertices wobble by hundredths of a point. Snap them
+// onto their AABB so later overlay/snap treats them as real rectangles.
+const nearAxisPt = 0.75
+
+func squareUp(poly [][2]float64) [][2]float64 {
+	if len(poly) != 4 || !nearAxisAligned(poly, nearAxisPt) {
+		return poly
 	}
-	return pageHeight - y
+	minX, minY, maxX, maxY := poly[0][0], poly[0][1], poly[0][0], poly[0][1]
+	for _, p := range poly[1:] {
+		if p[0] < minX {
+			minX = p[0]
+		}
+		if p[0] > maxX {
+			maxX = p[0]
+		}
+		if p[1] < minY {
+			minY = p[1]
+		}
+		if p[1] > maxY {
+			maxY = p[1]
+		}
+	}
+	out := make([][2]float64, 4)
+	for i, p := range poly {
+		x := minX
+		if abs(p[0]-maxX) < abs(p[0]-minX) {
+			x = maxX
+		}
+		y := minY
+		if abs(p[1]-maxY) < abs(p[1]-minY) {
+			y = maxY
+		}
+		out[i] = [2]float64{x, y}
+	}
+	return out
+}
+
+func nearAxisAligned(poly [][2]float64, eps float64) bool {
+	if len(poly) != 4 {
+		return false
+	}
+	for i := 0; i < 4; i++ {
+		a, b := poly[i], poly[(i+1)%4]
+		dx, dy := abs(a[0]-b[0]), abs(a[1]-b[1])
+		if dx > eps && dy > eps {
+			return false
+		}
+	}
+	return true
+}
+
+func abs(v float64) float64 {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 func dropClose(poly [][2]float64) [][2]float64 {

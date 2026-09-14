@@ -90,17 +90,97 @@ var (
 	pageObjRe  = regexp.MustCompile(`/Type\s*/Page[^s]`)
 )
 
-func boxWH(m [][]byte) (w, h float64, ok bool) {
+type pageBox struct {
+	x0, y0, x1, y1 float64
+}
+
+func boxFromMatch(m [][]byte) (pageBox, bool) {
 	if len(m) != 5 {
-		return 0, 0, false
+		return pageBox{}, false
 	}
 	x0, _ := strconv.ParseFloat(string(m[1]), 64)
 	y0, _ := strconv.ParseFloat(string(m[2]), 64)
 	x1, _ := strconv.ParseFloat(string(m[3]), 64)
 	y1, _ := strconv.ParseFloat(string(m[4]), 64)
-	w = math.Abs(x1 - x0)
-	h = math.Abs(y1 - y0)
-	return w, h, w > 0 && h > 0
+	if x1 == x0 || y1 == y0 {
+		return pageBox{}, false
+	}
+	return pageBox{x0: x0, y0: y0, x1: x1, y1: y1}, true
+}
+
+func boxWH(m [][]byte) (w, h float64, ok bool) {
+	b, ok := boxFromMatch(m)
+	if !ok {
+		return 0, 0, false
+	}
+	return math.Abs(b.x1 - b.x0), math.Abs(b.y1 - b.y0), true
+}
+
+func pageBoxFromObj(obj []byte) (pageBox, int, bool) {
+	var b pageBox
+	ok := false
+	if m := cropBoxRe.FindSubmatch(obj); len(m) == 5 {
+		b, ok = boxFromMatch(m)
+	}
+	if !ok {
+		if m := mediaBoxRe.FindSubmatch(obj); len(m) == 5 {
+			b, ok = boxFromMatch(m)
+		}
+	}
+	if !ok {
+		return pageBox{}, 0, false
+	}
+	rot := 0
+	if m := rotateRe.FindSubmatch(obj); len(m) == 2 {
+		rot, _ = strconv.Atoi(string(m[1]))
+		rot = ((rot % 360) + 360) % 360
+	}
+	return b, rot, true
+}
+
+func (b pageBox) viewportSize(rotate int) (w, h float64) {
+	w, h = math.Abs(b.x1-b.x0), math.Abs(b.y1-b.y0)
+	if rotate == 90 || rotate == 270 {
+		return h, w
+	}
+	return w, h
+}
+
+// toViewport maps a PDF user-space point onto the pdf.js canvas at scale 1
+// (CropBox/MediaBox origin, /Rotate, and the canvas Y-flip).
+func (b pageBox) toViewport(x, y float64, rotate int) (float64, float64) {
+	xMin, yMin, xMax, yMax := b.x0, b.y0, b.x1, b.y1
+	if xMax < xMin {
+		xMin, xMax = xMax, xMin
+	}
+	if yMax < yMin {
+		yMin, yMax = yMax, yMin
+	}
+	centerX := (xMax + xMin) / 2
+	centerY := (yMax + yMin) / 2
+	rotate = ((rotate % 360) + 360) % 360
+	var rotateA, rotateB, rotateC, rotateD float64
+	switch rotate {
+	case 180:
+		rotateA, rotateB, rotateC, rotateD = -1, 0, 0, 1
+	case 90:
+		rotateA, rotateB, rotateC, rotateD = 0, 1, 1, 0
+	case 270:
+		rotateA, rotateB, rotateC, rotateD = 0, -1, -1, 0
+	default:
+		rotateA, rotateB, rotateC, rotateD = 1, 0, 0, -1
+	}
+	var offsetCanvasX, offsetCanvasY float64
+	if rotateA == 0 {
+		offsetCanvasX = math.Abs(centerY - yMin)
+		offsetCanvasY = math.Abs(centerX - xMin)
+	} else {
+		offsetCanvasX = math.Abs(centerX - xMin)
+		offsetCanvasY = math.Abs(centerY - yMin)
+	}
+	tx := offsetCanvasX - rotateA*centerX - rotateC*centerY
+	ty := offsetCanvasY - rotateB*centerX - rotateD*centerY
+	return rotateA*x + rotateC*y + tx, rotateB*x + rotateD*y + ty
 }
 
 func splitPages(pdf []byte) ([]pdfPage, error) {

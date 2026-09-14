@@ -58,6 +58,23 @@ export function segmentIntersection(a: Point, b: Point, c: Point, d: Point): Poi
   return { x: a.x + t * rX, y: a.y + t * rY };
 }
 
+const ENDPOINT_EPS_PX = 0.5;
+
+/** Crossing in the interiors — not a shared endpoint / T-junction. */
+export function segmentInteriorIntersection(a: Point, b: Point, c: Point, d: Point): Point | null {
+  const p = segmentIntersection(a, b, c, d);
+  if (!p) return null;
+  if (
+    dist(p, a) <= ENDPOINT_EPS_PX ||
+    dist(p, b) <= ENDPOINT_EPS_PX ||
+    dist(p, c) <= ENDPOINT_EPS_PX ||
+    dist(p, d) <= ENDPOINT_EPS_PX
+  ) {
+    return null;
+  }
+  return p;
+}
+
 /** Axis-aligned AABB overlap (inclusive). */
 export function aabbOverlap(
   a: { minX: number; minY: number; maxX: number; maxY: number },

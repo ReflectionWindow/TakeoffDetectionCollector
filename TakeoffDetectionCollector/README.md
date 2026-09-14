@@ -53,7 +53,7 @@ Jobs can have free-form tags (building, market, QC notes, and so on). In the inb
 ## Cleaning process
 
 1. Run `cmd/ingest` (COCO, then vector PDFs, linked by slug).
-2. Claim an Original job. The canvas is the **vector PDF**, opened fit to the whole sheet. Imported boxes auto-snap on first open.
+2. Claim an Original job. The canvas is the **vector PDF**, opened fit to the whole sheet. Use **Snap all** on Box Edits to pull imported boxes onto linework.
 3. Work the three steps in order — **black out** the markups, **box edit** the geometry, **label fix** the classes — then send to review or mark complete.
 4. Anyone can reopen a complete sheet back to review or original.
 
@@ -98,7 +98,7 @@ Ported from `takeoff-services/apps/review-ui`:
 
 - Snap priority: `endpoint → intersection → midpoint → perpendicular → nearest → ortho → parallel`
 - Box magnets: `snapRectEdges` / `snapMoveRect` / `snapResizeEdges` (10 px capture, 13 px release, Alt bypass)
-- One-shot `snapModelBoxes` on first open of an imported page
+- One-shot `snapModelBoxes` from **Snap all** on Box Edits (not on first open)
 - Blackouts stored as **[0,1] page fractions**
 
 **Extensions** this collector adds (review-ui drops these):

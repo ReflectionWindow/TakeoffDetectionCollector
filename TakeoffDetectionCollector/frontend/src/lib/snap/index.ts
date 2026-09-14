@@ -25,6 +25,7 @@ export {
   cornerOfHandle,
   DEFAULT_ADJUST_SNAP,
   LINE_SNAP_MODES,
+  P1_SNAP_MODES,
   POINT_SNAP_MODES,
   queryAdjustSnap,
   queryPointSnap,

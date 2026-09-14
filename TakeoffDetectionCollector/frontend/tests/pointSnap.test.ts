@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { PageVectorsResponse } from "../src/api/types";
 import { bakeGeometryIndex } from "../src/lib/snap";
-import { applyCorner, queryAdjustSnap, queryPointSnap, snapRectByPoint } from "../src/lib/snap/pointSnap";
+import { applyCorner, enabledAdjustModes, queryAdjustSnap, queryPointSnap, snapRectByPoint } from "../src/lib/snap/pointSnap";
 
 function emptyStats() {
   return {
@@ -37,6 +37,18 @@ function indexWithLines(lines: number[][]) {
 }
 
 describe("point snap", () => {
+  it("enables perpendicular / ortho / parallel for a second click", () => {
+    expect(enabledAdjustModes({ line: true, point: true })).toEqual([
+      "endpoint",
+      "intersection",
+      "midpoint",
+      "nearest",
+      "perpendicular",
+      "ortho",
+      "parallel",
+    ]);
+  });
+
   it("snaps a cursor to a nearby endpoint", () => {
     const index = indexWithLines([[10, 10, 40, 10]]);
     const hit = queryPointSnap(index, { x: 11, y: 12 }, 1, false);
@@ -64,7 +76,7 @@ describe("point snap", () => {
     expect(hit?.point.y).toBeCloseTo(20);
   });
 
-  it("snaps onto a fill / poche outline when that geometry exists", () => {
+  it("does not snap onto a bulky poche fill outline", () => {
     const vec: PageVectorsResponse = {
       job_id: "job-1",
       page_index: 0,
@@ -84,9 +96,7 @@ describe("point snap", () => {
     };
     const index = bakeGeometryIndex(vec, { imageWidthPx: 100, imageHeightPx: 100, pageIndex: 0 });
     const hit = queryAdjustSnap(index, { x: 40, y: 12 }, 1, false, { line: true, point: true });
-    expect(hit).not.toBeNull();
-    expect(hit!.point.y).toBeCloseTo(10);
-    expect(hit!.guide && (hit!.guide.kind === "segment" || hit!.guide.kind === "midpoint")).toBe(true);
+    expect(hit).toBeNull();
   });
 
   it("snaps a cursor onto an isolated PDF tick / cross", () => {
