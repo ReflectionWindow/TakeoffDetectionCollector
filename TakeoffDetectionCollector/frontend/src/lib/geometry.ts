@@ -115,6 +115,19 @@ export function applyMarqueeSelection(baseIds: string[], hitIds: string[], addit
   return [...new Set([...baseIds, ...hitIds])];
 }
 
+export function isAdditiveSelectEvent(
+  e: {
+    shiftKey?: boolean;
+    metaKey?: boolean;
+    ctrlKey?: boolean;
+    getModifierState?: (key: string) => boolean;
+  },
+  accelHeld = false,
+): boolean {
+  if (e.shiftKey || e.metaKey || e.ctrlKey || accelHeld) return true;
+  return Boolean(e.getModifierState?.("Meta") || e.getModifierState?.("Control") || e.getModifierState?.("Accel"));
+}
+
 export type PolyPoint = { x: number; y: number };
 
 export function polygonAABB(points: PolyPoint[]): Rect {

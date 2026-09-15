@@ -4,6 +4,7 @@ import {
   boxesInRect,
   edgeMidpoints,
   insertVertex,
+  isAdditiveSelectEvent,
   isMarqueeGesture,
   isRectangle,
   MIN_POLY_POINTS,
@@ -129,5 +130,21 @@ describe("marquee selection", () => {
     expect(isMarqueeGesture(8, 0, 1)).toBe(true);
     expect(isMarqueeGesture(4, 0, 1)).toBe(false);
     expect(isMarqueeGesture(4, 0, 2)).toBe(true);
+  });
+});
+
+describe("additive select modifiers", () => {
+  it("treats Shift, ⌘, and Ctrl as additive", () => {
+    expect(isAdditiveSelectEvent({ shiftKey: true })).toBe(true);
+    expect(isAdditiveSelectEvent({ metaKey: true })).toBe(true);
+    expect(isAdditiveSelectEvent({ ctrlKey: true })).toBe(true);
+    expect(isAdditiveSelectEvent({})).toBe(false);
+  });
+
+  it("reads Accel/Meta from getModifierState and a held-key fallback", () => {
+    expect(isAdditiveSelectEvent({ getModifierState: (k) => k === "Accel" })).toBe(true);
+    expect(isAdditiveSelectEvent({ getModifierState: (k) => k === "Meta" })).toBe(true);
+    expect(isAdditiveSelectEvent({}, true)).toBe(true);
+    expect(isAdditiveSelectEvent({ getModifierState: () => false })).toBe(false);
   });
 });

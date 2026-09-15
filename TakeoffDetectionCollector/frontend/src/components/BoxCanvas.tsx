@@ -7,6 +7,7 @@ import {
   distToSegment,
   edgeMidpoints,
   insertVertex,
+  isAdditiveSelectEvent,
   isDrawGesture,
   isMarqueeGesture,
   isRectangle,
@@ -102,10 +103,6 @@ function toggleId(ids: string[], id: string): string[] {
   return ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id];
 }
 
-function additiveSelect(e: { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }) {
-  return e.shiftKey || e.metaKey || e.ctrlKey;
-}
-
 type Props = {
   imageWidth: number;
   imageHeight: number;
@@ -182,6 +179,7 @@ export default function BoxCanvas({
   const [preview, setPreview] = useState<Box[] | null>(null);
   const [liveBlackouts, setLiveBlackouts] = useState<BlackoutRegion[] | null>(null);
   const [spaceDown, setSpaceDown] = useState(false);
+  const accelHeldRef = useRef(false);
   const dragRef = useRef<
     | { kind: "draw"; x: number; y: number; locks: Partial<Record<BoxEdge, EdgeLock>> }
     | { kind: "blackout"; x: number; y: number }
@@ -249,6 +247,7 @@ export default function BoxCanvas({
 
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.key === "Meta" || e.key === "Control") accelHeldRef.current = true;
       if (e.code === "Space") {
         if (!e.repeat) setSpaceDown(true);
         if (e.target === document.body) e.preventDefault();
@@ -261,8 +260,14 @@ export default function BoxCanvas({
     };
     const up = (e: KeyboardEvent) => {
       if (e.code === "Space") setSpaceDown(false);
+      if (e.key === "Meta" || e.key === "Control" || e.code.startsWith("Meta") || e.code.startsWith("Control")) {
+        accelHeldRef.current = false;
+      }
     };
-    const onBlur = () => setSpaceDown(false);
+    const onBlur = () => {
+      accelHeldRef.current = false;
+      setSpaceDown(false);
+    };
     window.addEventListener("keydown", down);
     window.addEventListener("keyup", up);
     window.addEventListener("blur", onBlur);
@@ -272,6 +277,16 @@ export default function BoxCanvas({
       window.removeEventListener("blur", onBlur);
     };
   }, [draftPoly, boxes, className]);
+
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const blockBrowserCmdClick = (e: PointerEvent) => {
+      if (multiSelect && isAdditiveSelectEvent(e, accelHeldRef.current)) e.preventDefault();
+    };
+    el.addEventListener("pointerdown", blockBrowserCmdClick, { capture: true });
+    return () => el.removeEventListener("pointerdown", blockBrowserCmdClick, { capture: true });
+  }, [multiSelect]);
 
   const clientToImage = useCallback((clientX: number, clientY: number) => {
     const el = wrapRef.current;
@@ -419,6 +434,8 @@ export default function BoxCanvas({
     (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
     const p = clientToImage(e.clientX, e.clientY);
     const view = viewRef.current;
+    const additive = multiSelect && isAdditiveSelectEvent(e, accelHeldRef.current);
+    if (additive) e.preventDefault();
     if (e.button === 1 || spaceDown || tool === "pan") {
       dragRef.current = { kind: "pan", x: e.clientX, y: e.clientY, panX: view.panX, panY: view.panY };
       return;
@@ -518,7 +535,6 @@ export default function BoxCanvas({
     }
     const hit = showBoxes ? [...shown].reverse().find((b) => pointInPolygon(p.x, p.y, pointsOf(b))) : undefined;
     if (hit) {
-      const additive = multiSelect && additiveSelect(e);
       if (additive) onSelectedIds(toggleId(selectedIds, hit.box_id));
       else onSelectedIds([hit.box_id]);
       if (!geometryLocked) {
@@ -534,7 +550,6 @@ export default function BoxCanvas({
       return;
     }
     if (multiSelect && tool === "select") {
-      const additive = additiveSelect(e);
       dragRef.current = { kind: "marquee", x: p.x, y: p.y, additive, baseIds: additive ? [...selectedIds] : [] };
       const origin = { x1: p.x, y1: p.y, x2: p.x, y2: p.y };
       marqueeRef.current = origin;
@@ -769,7 +784,11 @@ export default function BoxCanvas({
     if (drag.kind === "marquee") {
       const p = clientToImage(e.clientX, e.clientY);
       const rect = marqueeRef.current ?? marquee;
-      if (rect && isMarqueeGesture(p.x - drag.x, p.y - drag.y, viewRef.current.zoom)) {
+      if (
+        e.type !== "pointercancel" &&
+        rect &&
+        isMarqueeGesture(p.x - drag.x, p.y - drag.y, viewRef.current.zoom)
+      ) {
         onSelectedIds(applyMarqueeSelection(drag.baseIds, boxesInRect(shown, rect), drag.additive));
       }
       marqueeRef.current = null;
@@ -836,6 +855,10 @@ export default function BoxCanvas({
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
+      onPointerCancel={onPointerUp}
+      onContextMenu={(e) => {
+        if (multiSelect) e.preventDefault();
+      }}
       onPointerLeave={() => {
         hoverRef.current = null;
         setOverlayCursor(null);
