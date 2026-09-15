@@ -16,6 +16,8 @@ type Props = {
   continueLabel: string | null;
   onContinue: () => void;
   continueDisabled?: boolean;
+  boxesHidden?: boolean;
+  onToggleBoxesHidden?: () => void;
   statusActions?: StatusAction[];
   onStatusAction?: (stage: JobStatus) => void;
   readOnly: boolean;
@@ -32,6 +34,8 @@ export default function BoxToolbar({
   continueLabel,
   onContinue,
   continueDisabled = false,
+  boxesHidden = false,
+  onToggleBoxesHidden,
   statusActions = [],
   onStatusAction,
   readOnly,
@@ -62,6 +66,16 @@ export default function BoxToolbar({
         </button>
       </div>
       <div className="box-toolbar-side box-toolbar-end">
+        {onToggleBoxesHidden ? (
+          <button
+            type="button"
+            className="btn-ghost"
+            aria-pressed={boxesHidden}
+            onClick={onToggleBoxesHidden}
+          >
+            {boxesHidden ? "Show boxes" : "Hide boxes"}
+          </button>
+        ) : null}
         {continueLabel ? (
           <button type="button" className="btn-primary" disabled={continueDisabled} onClick={onContinue}>
             {continueLabel}

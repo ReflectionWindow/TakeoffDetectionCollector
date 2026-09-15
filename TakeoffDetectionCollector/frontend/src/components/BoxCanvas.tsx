@@ -11,6 +11,7 @@ import {
   isDrawGesture,
   isMarqueeGesture,
   isRectangle,
+  selectionAfterHit,
   MIN_POLY_POINTS,
   NEAR_AXIS_PX,
   nearestEdge,
@@ -99,10 +100,6 @@ function polyEdgeAsHandle(pts: PolyPoint[], index: number): ResizeHandle | null 
   return null;
 }
 
-function toggleId(ids: string[], id: string): string[] {
-  return ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id];
-}
-
 type Props = {
   imageWidth: number;
   imageHeight: number;
@@ -131,7 +128,7 @@ type Props = {
   showLabels?: boolean;
   /** Only the blackout step can create, move, or resize cover regions. */
   editBlackouts?: boolean;
-  /** Labels step: shift-click and marquee select a group. */
+  /** Box Edits and Labels: shift-click and marquee select a group. */
   multiSelect?: boolean;
   /** Changing this refits the sheet — one value per job/page. */
   fitKey?: string;
@@ -183,7 +180,7 @@ export default function BoxCanvas({
   const dragRef = useRef<
     | { kind: "draw"; x: number; y: number; locks: Partial<Record<BoxEdge, EdgeLock>> }
     | { kind: "blackout"; x: number; y: number }
-    | { kind: "move"; id: string; x: number; y: number; points: PolyPoint[]; lock: MoveLock }
+    | { kind: "move"; id: string; ids: string[]; x: number; y: number; points: PolyPoint[]; lock: MoveLock }
     | { kind: "copy-move"; x: number; y: number; copies: Box[]; base: Box[]; sourceIds: string[]; lock: MoveLock }
     | { kind: "vertex"; id: string; index: number; points: PolyPoint[] }
     | { kind: "edge"; id: string; index: number; x: number; y: number; points: PolyPoint[]; locks: Partial<Record<BoxEdge, EdgeLock>> }
@@ -535,21 +532,29 @@ export default function BoxCanvas({
     }
     const hit = showBoxes ? [...shown].reverse().find((b) => pointInPolygon(p.x, p.y, pointsOf(b))) : undefined;
     if (hit) {
-      if (additive) onSelectedIds(toggleId(selectedIds, hit.box_id));
-      else onSelectedIds([hit.box_id]);
-      if (!geometryLocked) {
-        dragRef.current = { kind: "move", id: hit.box_id, x: p.x, y: p.y, points: pointsOf(hit), lock: emptyMoveLock() };
+      const nextIds = selectionAfterHit(selectedIds, hit.box_id, additive);
+      onSelectedIds(nextIds);
+      if (!geometryLocked && !additive) {
+        dragRef.current = {
+          kind: "move",
+          id: hit.box_id,
+          ids: nextIds,
+          x: p.x,
+          y: p.y,
+          points: pointsOf(hit),
+          lock: emptyMoveLock(),
+        };
         return;
       }
-      if (multiSelect && tool === "select") {
-        dragRef.current = { kind: "marquee", x: p.x, y: p.y, additive, baseIds: additive ? [...selectedIds] : [] };
+      if (multiSelect && tool === "select" && showBoxes) {
+        dragRef.current = { kind: "marquee", x: p.x, y: p.y, additive, baseIds: additive ? nextIds : [] };
         marqueeRef.current = null;
         return;
       }
       dragRef.current = null;
       return;
     }
-    if (multiSelect && tool === "select") {
+    if (multiSelect && tool === "select" && showBoxes) {
       dragRef.current = { kind: "marquee", x: p.x, y: p.y, additive, baseIds: additive ? [...selectedIds] : [] };
       const origin = { x1: p.x, y1: p.y, x2: p.x, y2: p.y };
       marqueeRef.current = origin;
@@ -706,7 +711,29 @@ export default function BoxCanvas({
       }
       const shifted = shiftPts(drag.points, drag.lock);
       drag.lock = shifted.lock;
-      setLive(shown.map((b) => (b.box_id === drag.id ? withAABB({ ...b, edited: true, origin: "user" as const }, shifted.pts) : b)));
+      const origin = aabbOf(drag.points);
+      const next = aabbOf(shifted.pts);
+      const ndx = next.x1 - origin.x1;
+      const ndy = next.y1 - origin.y1;
+      const moving = new Set(drag.ids);
+      setLive(
+        shown.map((b) => {
+          if (!moving.has(b.box_id)) return b;
+          if (b.box_id === drag.id) return withAABB({ ...b, edited: true, origin: "user" as const }, shifted.pts);
+          const pts = pointsOf(b);
+          if (isRectangle(pts, NEAR_AXIS_PX)) {
+            const start = aabbOf(pts);
+            return withAABB(
+              { ...b, edited: true, origin: "user" as const },
+              quadFromRect({ x1: start.x1 + ndx, y1: start.y1 + ndy, x2: start.x2 + ndx, y2: start.y2 + ndy }),
+            );
+          }
+          return withAABB(
+            { ...b, edited: true, origin: "user" as const },
+            pts.map((pt) => ({ x: pt.x + ndx, y: pt.y + ndy })),
+          );
+        }),
+      );
       return;
     }
     if (drag.kind === "vertex") {

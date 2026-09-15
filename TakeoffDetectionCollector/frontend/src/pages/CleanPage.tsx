@@ -96,7 +96,7 @@ function pageCacheKey(jobId: string, idx: number, w: number, h: number) {
 
 const STEP_KEYS: Record<Step, string> = {
   blackout: "Scroll to pan · Pinch or ⌃scroll to zoom · Space-drag also pans · Drag a region to move it · Delete removes it · ⌘Z undo · ⇧⌘Z redo",
-  boxes: "Select · Draw · Esc clears · ⌘C copy · ⌘V paste · ⌘D duplicate · Alt-drag stamps a copy · Scroll pans · Pinch or ⌃scroll zooms · ⌘Z undo · ⇧⌘Z redo",
+  boxes: "Select · Draw · Drag empty to group-select · Shift-click adds · Esc clears · ⌘C copy · ⌘V paste · ⌘D duplicate · Alt-drag stamps a copy · Scroll pans · Pinch or ⌃scroll zooms · ⌘Z undo · ⇧⌘Z redo",
   labels: "Drag across shapes to group-select · Shift-click adds · ⌘A all · Pick a class · Scroll pans · Pinch or ⌃scroll zooms · ⌘Z undo",
 };
 
@@ -118,6 +118,7 @@ export default function CleanPage() {
   const [sheetPts, setSheetPts] = useState<{ widthPt: number; heightPt: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [boxesHidden, setBoxesHidden] = useState(false);
   const [selectedBlackoutIndex, setSelectedBlackoutIndex] = useState<number | null>(null);
   const [blackoutUndo, setBlackoutUndo] = useState(0);
   const [blackoutRedo, setBlackoutRedo] = useState(0);
@@ -555,6 +556,7 @@ export default function CleanPage() {
     if (next === "blackout") setBoxTool((t) => (t === "pan" ? "pan" : "draw"));
     if (next === "boxes") setBoxTool((t) => (t === "pan" ? "pan" : "select"));
     if (next === "labels") setBoxTool("select");
+    setBoxesHidden(false);
     setSelectedIds([]);
     setSelectedBlackoutIndex(null);
     const first = pages[0]?.page_index ?? 0;
@@ -818,7 +820,7 @@ export default function CleanPage() {
         setSelectedIds([]);
         setSelectedBlackoutIndex(null);
       }
-      if (mod && e.key.toLowerCase() === "a" && step === "labels") {
+      if (mod && e.key.toLowerCase() === "a" && (step === "labels" || step === "boxes") && !boxesHidden) {
         e.preventDefault();
         setSelectedIds(draft.boxes.map((b) => b.box_id));
         return;
@@ -836,7 +838,7 @@ export default function CleanPage() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [selectedIds, step, draft]);
+  }, [selectedIds, step, draft, boxesHidden]);
 
   useEffect(() => {
     const onLeave = (e: BeforeUnloadEvent) => {
@@ -928,6 +930,17 @@ export default function CleanPage() {
         continueLabel={continueLabel}
         onContinue={onContinue}
         continueDisabled={false}
+        boxesHidden={boxesHidden}
+        onToggleBoxesHidden={
+          step === "boxes"
+            ? () => {
+                setBoxesHidden((hidden) => {
+                  if (!hidden) setSelectedIds([]);
+                  return !hidden;
+                });
+              }
+            : undefined
+        }
         statusActions={actions}
         onStatusAction={(stage) => void onAdvance(stage)}
         readOnly={readOnly}
@@ -988,10 +1001,10 @@ export default function CleanPage() {
             readOnly={readOnly}
             geometryLocked={geometryLocked(step)}
             snapping={snapEnabled(step)}
-            showBoxes={boxesVisible(step)}
+            showBoxes={boxesVisible(step) && !boxesHidden}
             showLabels={labelsVisible(step)}
             editBlackouts={blackoutEnabled(step)}
-            multiSelect={step === "labels"}
+            multiSelect={(step === "labels" || step === "boxes") && !boxesHidden}
             fitKey={`${job.id}:${pageIndex}:${displayW}x${displayH}`}
           />
           <ToolPalette

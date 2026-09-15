@@ -12,6 +12,7 @@ import {
   quadFromRect,
   rectsOverlap,
   removeVertex,
+  selectionAfterHit,
 } from "../src/lib/geometry";
 
 const box = quadFromRect({ x1: 0, y1: 0, x2: 100, y2: 50 });
@@ -130,6 +131,18 @@ describe("marquee selection", () => {
     expect(isMarqueeGesture(8, 0, 1)).toBe(true);
     expect(isMarqueeGesture(4, 0, 1)).toBe(false);
     expect(isMarqueeGesture(4, 0, 2)).toBe(true);
+  });
+});
+
+describe("selectionAfterHit", () => {
+  it("replaces the selection unless the hit is already in a group", () => {
+    expect(selectionAfterHit(["a"], "b", false)).toEqual(["b"]);
+    expect(selectionAfterHit(["a", "b"], "b", false)).toEqual(["a", "b"]);
+  });
+
+  it("toggles membership when additive", () => {
+    expect(selectionAfterHit(["a"], "b", true)).toEqual(["a", "b"]);
+    expect(selectionAfterHit(["a", "b"], "b", true)).toEqual(["a"]);
   });
 });
 

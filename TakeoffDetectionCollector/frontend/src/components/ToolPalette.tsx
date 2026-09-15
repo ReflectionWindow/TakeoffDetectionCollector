@@ -116,7 +116,7 @@ export default function ToolPalette({
         ? "Click a shape, or drag across several to select a group. Shift-click or ⌘-click adds."
         : step === "blackout"
           ? "Click a blackout to select it, then drag to move or Delete to remove it."
-          : "Click a shape to select. Drag to move; handles reshape.",
+          : "Click a shape to select. Drag to move; handles reshape. Drag empty space or Shift-click to select a group.",
       icon: <Icon path="M4 4l7 16 2.5-7L21 11z" />,
       active: tool === "select",
       disabled: false,

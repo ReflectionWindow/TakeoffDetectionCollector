@@ -34,7 +34,7 @@ export const STEP_BLURB: Record<Step, string> = {
 export const STEP_HINT: Record<Step, string> = {
   blackout: "Drag to cover a markup. Drag a region to move it, or a corner to resize. Delete removes the selection.",
   boxes:
-    "Click to add polygon vertices (Enter or click the first point to close). Drag to place a quad. Drag vertices or edges to adjust. ⌘C / ⌘V copy and paste, ⌘D duplicates, Alt-drag stamps a copy.",
+    "Click to add polygon vertices (Enter or click the first point to close). Drag to place a quad. Drag vertices or edges to adjust. Drag empty space or Shift-click to select a group. ⌘C / ⌘V copy and paste, ⌘D duplicates, Alt-drag stamps a copy.",
   labels: "Click a shape, or drag across several — you can start on a shape. Shift-click adds. Pick a class to assign.",
 }
 

@@ -115,6 +115,12 @@ export function applyMarqueeSelection(baseIds: string[], hitIds: string[], addit
   return [...new Set([...baseIds, ...hitIds])];
 }
 
+export function selectionAfterHit(selectedIds: string[], hitId: string, additive: boolean): string[] {
+  if (additive) return selectedIds.includes(hitId) ? selectedIds.filter((id) => id !== hitId) : [...selectedIds, hitId];
+  if (selectedIds.length > 1 && selectedIds.includes(hitId)) return selectedIds;
+  return [hitId];
+}
+
 export function isAdditiveSelectEvent(
   e: {
     shiftKey?: boolean;

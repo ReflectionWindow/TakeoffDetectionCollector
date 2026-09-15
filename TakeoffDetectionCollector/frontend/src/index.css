@@ -120,6 +120,7 @@ code {
   border-color: var(--hairline-strong);
 }
 .btn-ghost:hover { background: var(--hover); }
+.btn-ghost[aria-pressed="true"] { background: var(--hover); }
 .btn-primary:disabled, .btn-ghost:disabled { opacity: 0.4; cursor: not-allowed; }
 .file-btn { display: inline-flex; align-items: center; gap: 6px; }
 .btn-danger-quiet {
