@@ -297,7 +297,9 @@ export async function fetchPdf(jobId: string): Promise<ArrayBuffer> {
     throw new ApiError(SESSION_EXPIRED_MESSAGE, 401);
   }
   if (!res.ok) throw new ApiError((await res.text()).trim() || res.statusText, res.status);
-  return res.arrayBuffer();
+  const buf = await res.arrayBuffer();
+  if (buf.byteLength < 5) throw new ApiError("empty pdf", res.status);
+  return buf;
 }
 
 export async function getAnnotations(

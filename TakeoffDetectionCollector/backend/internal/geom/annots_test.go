@@ -14,6 +14,9 @@ func TestStripAnnotsRemovesMarkup(t *testing.T) {
 	if !bytes.Contains(out, []byte("/Type/Page")) {
 		t.Fatal("page object removed")
 	}
+	if len(out) < len(pdf) {
+		t.Fatalf("strip shortened pdf %d -> %d (breaks xref offsets)", len(pdf), len(out))
+	}
 }
 
 func TestStripAnnotsLeavesPlainPDF(t *testing.T) {

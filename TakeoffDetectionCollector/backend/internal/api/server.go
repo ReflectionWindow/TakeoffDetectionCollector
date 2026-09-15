@@ -795,7 +795,8 @@ func (s *Server) getPDF(w http.ResponseWriter, r *http.Request, _ auth.User) {
 	}
 	// Sheet PDFs run to several MB and the storage key embeds the content hash,
 	// so a revalidating client can be answered with a 304 instead of the body.
-	etag := `"` + path.Base(strings.TrimSuffix(key, ".pdf")) + `"`
+	// -x1 busts caches of files whose xref was invalidated by an older StripAnnots.
+	etag := `"` + path.Base(strings.TrimSuffix(key, ".pdf")) + `-x1"`
 	w.Header().Set("ETag", etag)
 	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
 	if match := r.Header.Get("If-None-Match"); match != "" && strings.Contains(match, etag) {
@@ -807,6 +808,7 @@ func (s *Server) getPDF(w http.ResponseWriter, r *http.Request, _ auth.User) {
 		http.Error(w, err.Error(), 404)
 		return
 	}
+	data = geom.EnsureXRef(data)
 	w.Header().Set("Content-Type", "application/pdf")
 	w.Write(data)
 }

@@ -26,7 +26,7 @@ export function saveStatusLabel(tone: SaveTone, saveError?: string | null): stri
   }
 }
 
-type PersistFn = (boxes: Box[]) => Promise<void>;
+type PersistFn = (boxes: Box[], pageIndex: number) => Promise<void>;
 
 /**
  * Optimistic boxes with a short undo stack and a 300ms save debounce, so
@@ -52,6 +52,7 @@ export function useAnnotationDraft(opts: { persist: PersistFn; writable: boolean
   const cacheRef = useRef(new Map<string, Box[]>());
   const saveGenRef = useRef(0);
   const pageKeyRef = useRef<string>("");
+  const originPageRef = useRef<number | null>(null);
   const toneRef = useRef<SaveTone>("idle");
 
   const setTone = useCallback((tone: SaveTone) => {
@@ -85,11 +86,14 @@ export function useAnnotationDraft(opts: { persist: PersistFn; writable: boolean
     }
     if (!writableRef.current) return;
     if (toneRef.current !== "dirty" && toneRef.current !== "error") return;
+    const page = originPageRef.current;
+    if (page == null) return;
+    const snapshot = cloneBoxes(boxesRef.current);
     const gen = ++saveGenRef.current;
     setTone("saving");
     setSaveError(null);
     try {
-      await persistRef.current(boxesRef.current);
+      await persistRef.current(snapshot, page);
       if (gen !== saveGenRef.current) return;
       setTone("saved");
     } catch (err) {
@@ -153,12 +157,13 @@ export function useAnnotationDraft(opts: { persist: PersistFn; writable: boolean
   }, []);
 
   const hydrate = useCallback(
-    (key: string, next: Box[]) => {
+    (key: string, next: Box[], pageIndex: number) => {
       if (debounceRef.current) {
         window.clearTimeout(debounceRef.current);
         debounceRef.current = null;
       }
       pageKeyRef.current = key;
+      originPageRef.current = pageIndex;
       saveGenRef.current += 1;
       historyRef.current = [];
       futureRef.current = [];

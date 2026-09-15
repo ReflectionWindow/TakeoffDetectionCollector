@@ -10,16 +10,25 @@ var (
 	annotsRefRe   = regexp.MustCompile(`/Annots\s+\d+\s+\d+\s+R`)
 )
 
-// StripAnnots removes PDF annotation dictionaries from page objects so Bluebeam
-// markups are not drawn. Content-stream linework (the vector drawing) is kept.
+func blankMatch(m []byte) []byte {
+	out := make([]byte, len(m))
+	for i := range out {
+		out[i] = ' '
+	}
+	return out
+}
+
+// StripAnnots blanks PDF annotation dictionaries on page objects so Bluebeam
+// markups are not drawn. Replacements keep the original byte length so the
+// xref table stays valid. Content-stream linework is kept.
 func StripAnnots(pdf []byte) []byte {
 	if len(pdf) == 0 {
 		return pdf
 	}
-	out := annotsArrayRe.ReplaceAll(pdf, nil)
-	out = annotsRefRe.ReplaceAll(out, nil)
+	out := annotsArrayRe.ReplaceAllFunc(pdf, blankMatch)
+	out = annotsRefRe.ReplaceAllFunc(out, blankMatch)
 	if !bytes.HasPrefix(bytes.TrimSpace(out), []byte("%PDF")) {
 		return pdf
 	}
-	return out
+	return EnsureXRef(out)
 }

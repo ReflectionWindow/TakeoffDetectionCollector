@@ -167,13 +167,15 @@ export default function CleanPage() {
   const editFutureRef = useRef<Array<"boxes" | "blackouts">>([]);
 
   const persist = useCallback(
-    async (rows: Box[]) => {
+    async (rows: Box[], page: number) => {
       if (!id) return;
       const payload = fromBoxesRef.current(rows);
-      const res = await saveAnnotations(id, pageIndexRef.current, payload, "edit");
+      const res = await saveAnnotations(id, page, payload, "edit");
+      if (pageIndexRef.current !== page) return;
       setVersion(res.payload.version);
       setStored(res.payload.boxes);
-      const revs = await listRevisions(id, pageIndexRef.current);
+      const revs = await listRevisions(id, page);
+      if (pageIndexRef.current !== page) return;
       setRevisions(revs.revisions);
     },
     [id],
@@ -237,9 +239,11 @@ export default function CleanPage() {
       return cached;
     }
     if (pdfRef.current?.jobId !== jobId) {
+      const prev = pdfRef.current?.doc;
       const doc = await loadPdfData(await fetchPdf(jobId));
       pdfRef.current = { jobId, doc };
       sheetCacheRef.current.clear();
+      void prev?.destroy();
     }
     const c = document.createElement("canvas");
     const rendered = await renderPageToCanvas(pdfRef.current.doc, idx, SHEET_RENDER_SCALE, c);
@@ -315,7 +319,7 @@ export default function CleanPage() {
           : cachedBoxes;
       setStored(payload.boxes);
       setVersion(payload.version);
-      draft.hydrate(key, nextBoxes);
+      draft.hydrate(key, nextBoxes, idx);
     },
     [draft, toBoxes],
   );
@@ -498,6 +502,10 @@ export default function CleanPage() {
         if (claimGenRef.current !== releasedGen) return;
         void releaseJob(id).catch(() => undefined);
       }, 50);
+      const pdf = pdfRef.current;
+      pdfRef.current = null;
+      sheetCacheRef.current.clear();
+      void pdf?.doc.destroy();
     };
     // Mount-only: claim, heartbeat, and PDF parse must not restart on every draft identity change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -583,6 +591,7 @@ export default function CleanPage() {
     draft.hydrate(
       pageCacheKey(id, pageIndex, displayW, displayH),
       toBoxes(res.payload.boxes, displayW, displayH, pageWpt, pageHpt, page, shouldRasterOverlay(res.payload.version, res.revision.note)),
+      pageIndex,
     );
     const revs = await listRevisions(id, pageIndex);
     setRevisions(revs.revisions);
@@ -594,8 +603,10 @@ export default function CleanPage() {
     const data = await getJob(id);
     setJob(data.job);
     setPages(data.pages);
+    const prevPdf = pdfRef.current?.doc;
     pdfRef.current = null;
     sheetCacheRef.current.clear();
+    void prevPdf?.destroy();
     const rendered = await renderSheet(id, pageIndex);
     const meta = data.pages.find((p) => p.page_index === pageIndex) ?? data.pages[0];
     await loadPage(id, pageIndex, rendered.width, rendered.height, rendered.pageWidthPt, rendered.pageHeightPt, meta);
