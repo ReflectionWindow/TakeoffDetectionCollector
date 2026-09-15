@@ -38,7 +38,7 @@ func ExtractMarkups(pdf []byte) []PageMarkups {
 	ordered, byNum := indexObjects(pdf)
 	var out []PageMarkups
 	for _, obj := range ordered {
-		if !pageObjRe.Match(obj.data) {
+		if !isPageObject(obj.data) {
 			continue
 		}
 		box, rot, ok := pageBoxFromObj(obj.data)
@@ -64,7 +64,7 @@ func ExtractMarkups(pdf []byte) []PageMarkups {
 }
 
 func indexObjects(pdf []byte) ([]pdfObject, map[int][]byte) {
-	parts := splitObjects(pdf)
+	parts := allPDFObjects(pdf)
 	byNum := map[int][]byte{}
 	ordered := make([]pdfObject, 0, len(parts))
 	for _, p := range parts {

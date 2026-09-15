@@ -5,7 +5,9 @@ import (
 	"time"
 )
 
-const DefaultClaimTTL = 24 * time.Hour
+// DefaultClaimTTL is how long a sheet stays locked after the last heartbeat.
+// Heartbeats run every 30s while the tab is open; tab close releases immediately.
+const DefaultClaimTTL = 5 * time.Minute
 
 func IsStage(s JobStatus) bool {
 	switch s {

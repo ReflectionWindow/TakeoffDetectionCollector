@@ -2,11 +2,13 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import type { Box, PolyPoint } from "../api/types";
 import { classColor, classNameToId } from "../lib/classes";
 import {
+  applyMarqueeSelection,
   boxesInRect,
   distToSegment,
   edgeMidpoints,
   insertVertex,
   isDrawGesture,
+  isMarqueeGesture,
   isRectangle,
   MIN_POLY_POINTS,
   NEAR_AXIS_PX,
@@ -100,6 +102,10 @@ function toggleId(ids: string[], id: string): string[] {
   return ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id];
 }
 
+function additiveSelect(e: { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }) {
+  return e.shiftKey || e.metaKey || e.ctrlKey;
+}
+
 type Props = {
   imageWidth: number;
   imageHeight: number;
@@ -171,6 +177,7 @@ export default function BoxCanvas({
   const [hover, setHover] = useState<PolyPoint | null>(null);
   const [draftRect, setDraftRect] = useState<Rect | null>(null);
   const [marquee, setMarquee] = useState<Rect | null>(null);
+  const marqueeRef = useRef<Rect | null>(null);
   const [draftPoly, setDraftPoly] = useState<PolyPoint[]>([]);
   const [preview, setPreview] = useState<Box[] | null>(null);
   const [liveBlackouts, setLiveBlackouts] = useState<BlackoutRegion[] | null>(null);
@@ -184,7 +191,7 @@ export default function BoxCanvas({
     | { kind: "edge"; id: string; index: number; x: number; y: number; points: PolyPoint[]; locks: Partial<Record<BoxEdge, EdgeLock>> }
     | { kind: "blackout-move"; index: number; x: number; y: number; region: BlackoutRegion }
     | { kind: "blackout-resize"; index: number; handle: ResizeHandle; x: number; y: number; region: BlackoutRegion }
-    | { kind: "marquee"; x: number; y: number; additive: boolean }
+    | { kind: "marquee"; x: number; y: number; additive: boolean; baseIds: string[] }
     | { kind: "pan"; x: number; y: number; panX: number; panY: number }
     | null
   >(null);
@@ -511,19 +518,28 @@ export default function BoxCanvas({
     }
     const hit = showBoxes ? [...shown].reverse().find((b) => pointInPolygon(p.x, p.y, pointsOf(b))) : undefined;
     if (hit) {
-      if (multiSelect && e.shiftKey) onSelectedIds(toggleId(selectedIds, hit.box_id));
+      const additive = multiSelect && additiveSelect(e);
+      if (additive) onSelectedIds(toggleId(selectedIds, hit.box_id));
       else onSelectedIds([hit.box_id]);
       if (!geometryLocked) {
         dragRef.current = { kind: "move", id: hit.box_id, x: p.x, y: p.y, points: pointsOf(hit), lock: emptyMoveLock() };
+        return;
+      }
+      if (multiSelect && tool === "select") {
+        dragRef.current = { kind: "marquee", x: p.x, y: p.y, additive, baseIds: additive ? [...selectedIds] : [] };
+        marqueeRef.current = null;
         return;
       }
       dragRef.current = null;
       return;
     }
     if (multiSelect && tool === "select") {
-      dragRef.current = { kind: "marquee", x: p.x, y: p.y, additive: e.shiftKey };
-      setMarquee({ x1: p.x, y1: p.y, x2: p.x, y2: p.y });
-      if (!e.shiftKey) onSelectedIds([]);
+      const additive = additiveSelect(e);
+      dragRef.current = { kind: "marquee", x: p.x, y: p.y, additive, baseIds: additive ? [...selectedIds] : [] };
+      const origin = { x1: p.x, y1: p.y, x2: p.x, y2: p.y };
+      marqueeRef.current = origin;
+      setMarquee(origin);
+      if (!additive) onSelectedIds([]);
       return;
     }
     onSelectedIds([]);
@@ -592,7 +608,11 @@ export default function BoxCanvas({
       return;
     }
     if (drag.kind === "marquee") {
-      setMarquee({ x1: drag.x, y1: drag.y, x2: p.x, y2: p.y });
+      if (!isMarqueeGesture(p.x - drag.x, p.y - drag.y, z)) return;
+      const next = { x1: drag.x, y1: drag.y, x2: p.x, y2: p.y };
+      marqueeRef.current = next;
+      setMarquee(next);
+      onSelectedIds(applyMarqueeSelection(drag.baseIds, boxesInRect(shown, next), drag.additive));
       return;
     }
     if (drag.kind === "blackout-move") {
@@ -746,11 +766,13 @@ export default function BoxCanvas({
       e.stopPropagation();
       return;
     }
-    if (drag.kind === "marquee" && marquee) {
-      const ids = boxesInRect(shown, marquee);
-      if (ids.length || Math.hypot(marquee.x2 - drag.x, marquee.y2 - drag.y) * viewRef.current.zoom >= 8) {
-        onSelectedIds(drag.additive ? [...new Set([...selectedIds, ...ids])] : ids);
+    if (drag.kind === "marquee") {
+      const p = clientToImage(e.clientX, e.clientY);
+      const rect = marqueeRef.current ?? marquee;
+      if (rect && isMarqueeGesture(p.x - drag.x, p.y - drag.y, viewRef.current.zoom)) {
+        onSelectedIds(applyMarqueeSelection(drag.baseIds, boxesInRect(shown, rect), drag.additive));
       }
+      marqueeRef.current = null;
       setMarquee(null);
       e.stopPropagation();
       return;
@@ -801,6 +823,7 @@ export default function BoxCanvas({
   const stageClass = [
     "stage",
     tool === "blackout" || tool === "draw" ? "draw-mode" : "",
+    tool === "select" ? "select-mode" : "",
     tool === "pan" || spaceDown ? "pan-mode" : "",
   ]
     .filter(Boolean)

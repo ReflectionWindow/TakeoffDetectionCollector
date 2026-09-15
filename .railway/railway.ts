@@ -27,7 +27,7 @@ export default defineRailway(() => {
     env: {
       ALLOWED_EMAIL_DOMAIN: "reflectionwindow.com",
       INGEST_WORKERS: "16",
-      CLAIM_TTL: "24h",
+      CLAIM_TTL: "5m",
       DB_MAX_OPEN_CONNS: "16",
       DB_MAX_IDLE_CONNS: "8",
       CORS_ORIGINS: "https://takeoff-detection-collector.vercel.app,https://*.vercel.app",

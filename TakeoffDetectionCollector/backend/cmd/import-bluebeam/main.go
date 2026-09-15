@@ -20,6 +20,7 @@ import (
 	"github.com/StephenLiRWW/TakeoffDetectionCollector/internal/api"
 	"github.com/StephenLiRWW/TakeoffDetectionCollector/internal/coco"
 	"github.com/StephenLiRWW/TakeoffDetectionCollector/internal/config"
+	"github.com/StephenLiRWW/TakeoffDetectionCollector/internal/geom"
 	"github.com/StephenLiRWW/TakeoffDetectionCollector/internal/storage"
 	"github.com/StephenLiRWW/TakeoffDetectionCollector/internal/store"
 )
@@ -30,6 +31,7 @@ func main() {
 	project := flag.String("project", "", "project name (created if missing). default Manila")
 	cocoDir := flag.String("coco", "", "optional Roboflow export root to fill opening boxes and blackouts")
 	replaceBoxes := flag.Bool("replace-boxes", false, "write COCO boxes as a new latest revision (undo auto-snap)")
+	restoreSnapped := flag.Bool("restore-snapped", false, "replace auto-snapped pages with Bluebeam / COCO markup (no backend snap)")
 	dryRun := flag.Bool("dry-run", false, "print matches without writing")
 	flag.Parse()
 	if *dir == "" {
@@ -104,6 +106,17 @@ func main() {
 	existing, err := existingJobs(ctx, db)
 	if err != nil {
 		log.Fatal(err)
+	}
+
+	restored := 0
+	if *restoreSnapped {
+		n, err := restoreSnappedPages(ctx, db, st, *dir, *cocoDir, want, existing, *dryRun)
+		if err != nil {
+			log.Fatal(err)
+		}
+		restored = n
+		fmt.Printf("imported=0 skipped=0 coco_filled=0 restored_snapped=%d failed=0 dry_run=%v\n", restored, *dryRun)
+		return
 	}
 
 	entries, err := os.ReadDir(*dir)
@@ -188,6 +201,125 @@ func main() {
 		}
 	}
 	fmt.Printf("imported=%d skipped=%d coco_filled=%d failed=%d dry_run=%v\n", imported, skipped, filled, failed, *dryRun)
+}
+
+type snappedPage struct {
+	jobID     string
+	slug      string
+	pageIndex int
+}
+
+func restoreSnappedPages(ctx context.Context, db *sql.DB, st store.Store, dir, cocoDir string, want map[string]struct{}, existing map[string]string, dryRun bool) (int, error) {
+	rows, err := db.QueryContext(ctx, `
+		select j.id::text, j.slug, r.page_index
+		from annotation_revisions r
+		join jobs j on j.id = r.job_id
+		where lower(trim(coalesce(r.note,''))) = 'auto-snap'
+		group by j.id, j.slug, r.page_index
+		order by j.slug, r.page_index`)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	var pages []snappedPage
+	for rows.Next() {
+		var p snappedPage
+		if err := rows.Scan(&p.jobID, &p.slug, &p.pageIndex); err != nil {
+			return 0, err
+		}
+		if len(want) > 0 {
+			if _, ok := want[p.slug]; !ok {
+				continue
+			}
+		}
+		pages = append(pages, p)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	if len(pages) == 0 {
+		return 0, nil
+	}
+
+	bySlug := map[string][]snappedPage{}
+	for _, p := range pages {
+		bySlug[p.slug] = append(bySlug[p.slug], p)
+	}
+
+	restored := 0
+	for slug, jobPages := range bySlug {
+		jobID := jobPages[0].jobID
+		if id, ok := existing[slug]; ok {
+			jobID = id
+		}
+		pdfBoxes := map[int][]store.Box{}
+		pdfPath := filepath.Join(dir, slug+".pdf")
+		if data, err := os.ReadFile(pdfPath); err == nil {
+			for _, pg := range geom.ExtractMarkups(data) {
+				pdfBoxes[pg.PageIndex] = api.BoxesFromMarkups(pg.PageIndex, pg.Markups)
+			}
+		} else if !os.IsNotExist(err) {
+			log.Printf("read %s: %v", slug, err)
+		}
+		var cocoByPage map[int][]store.Box
+		if cocoDir != "" && coco.AnnotationFile(cocoDir, slug) != "" {
+			imp, err := coco.LoadJobDir(cocoDir, slug)
+			if err != nil {
+				log.Printf("coco %s: %v", slug, err)
+			} else {
+				cocoByPage = imp.ByPage
+			}
+		}
+		for _, p := range jobPages {
+			boxes := pdfBoxes[p.pageIndex]
+			src := "bluebeam"
+			if len(boxes) == 0 && cocoByPage != nil {
+				boxes = cocoByPage[p.pageIndex]
+				src = "coco"
+			}
+			if len(boxes) == 0 {
+				log.Printf("skip restore %s p%d: no markup in pdf/coco", slug, p.pageIndex)
+				continue
+			}
+			if dryRun {
+				log.Printf("would restore %s p%d from %s boxes=%d", slug, p.pageIndex, src, len(boxes))
+				restored++
+				continue
+			}
+			if err := writeRestoredBoxes(ctx, st, jobID, p.pageIndex, boxes, src); err != nil {
+				return restored, fmt.Errorf("%s p%d: %w", slug, p.pageIndex, err)
+			}
+			log.Printf("restored %s p%d from %s boxes=%d", slug, p.pageIndex, src, len(boxes))
+			restored++
+		}
+	}
+	return restored, nil
+}
+
+func writeRestoredBoxes(ctx context.Context, st store.Store, jobID string, pageIndex int, boxes []store.Box, src string) error {
+	version := 0
+	var parent *int
+	if latest, _, err := st.LatestRevision(ctx, jobID, pageIndex); err == nil {
+		n := latest.Version + 1
+		version = n
+		pv := latest.Version
+		parent = &pv
+	}
+	note := "restored markup"
+	if src == "coco" {
+		note = "imported coco"
+	}
+	payload := store.AnnotationPayload{JobID: jobID, PageIndex: pageIndex, Version: version, Boxes: boxes}
+	revKey := fmt.Sprintf("annotations/%s/p%d/v%d.json", jobID, pageIndex, version)
+	return st.SaveRevision(ctx, store.Revision{
+		JobID:         jobID,
+		PageIndex:     pageIndex,
+		Version:       version,
+		ParentVersion: parent,
+		StorageKey:    revKey,
+		Note:          note,
+		CreatedAt:     time.Now().UTC(),
+	}, payload)
 }
 
 func fillFromCoco(ctx context.Context, st store.Store, cocoDir, slug, jobID string, dryRun, replaceBoxes bool) (boxes, blackoutPages int, err error) {

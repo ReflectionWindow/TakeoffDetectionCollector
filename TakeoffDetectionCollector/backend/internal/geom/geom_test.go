@@ -1,6 +1,42 @@
 package geom
 
-import "testing"
+import (
+	"bytes"
+	"compress/zlib"
+	"fmt"
+	"testing"
+)
+
+func TestObjStmPageCount(t *testing.T) {
+	page := []byte("<</Type/Page/MediaBox[0 0 612 792]/Parent 2 0 R>>")
+	header := []byte("7 0 ")
+	body := append(append([]byte{}, header...), page...)
+	var buf bytes.Buffer
+	w := zlib.NewWriter(&buf)
+	if _, err := w.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	comp := buf.Bytes()
+	pdf := []byte(fmt.Sprintf(
+		"%%PDF-1.5\n1 0 obj<</Type/ObjStm/N 1/First %d/Filter/FlateDecode/Length %d>>stream\n",
+		len(header), len(comp),
+	))
+	pdf = append(pdf, comp...)
+	pdf = append(pdf, []byte("\nendstream\nendobj\n%%EOF\n")...)
+	if n := PageCount(pdf); n != 1 {
+		t.Fatalf("PageCount=%d", n)
+	}
+	pages := ExtractMarkups(pdf)
+	if len(pages) != 1 {
+		t.Fatalf("ExtractMarkups=%d", len(pages))
+	}
+	if pages[0].WidthPt != 612 || pages[0].HeightPt != 792 {
+		t.Fatalf("size %v x %v", pages[0].WidthPt, pages[0].HeightPt)
+	}
+}
 
 func TestWalkRectAndFill(t *testing.T) {
 	content := []byte("0 0 100 40 re S 10 10 m 20 10 l 20 20 l 10 20 l h f 5 5 m 5 5 l S")

@@ -76,7 +76,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/jobs/{id}", s.withAuth(s.deleteJob))
 	mux.HandleFunc("POST /v1/jobs/{id}/claim", s.withAuth(s.claimJob))
 	mux.HandleFunc("POST /v1/jobs/{id}/heartbeat", s.withAuth(s.heartbeatJob))
-	mux.HandleFunc("POST /v1/jobs/{id}/release", s.withAuth(s.releaseJob))
+	mux.HandleFunc("POST /v1/jobs/{id}/release", s.withUnloadAuth(s.releaseJob))
 	mux.HandleFunc("POST /v1/jobs/{id}/stage", s.withAuth(s.setStage))
 	mux.HandleFunc("GET /v1/tags", s.withAuth(s.listTags))
 	mux.HandleFunc("PUT /v1/jobs/{id}/tags", s.withAuth(s.setJobTags))
@@ -628,7 +628,7 @@ func (s *Server) persistBluebeamJob(ctx context.Context, u auth.User, projectID,
 		if err := s.store.UpsertPage(ctx, page); err != nil {
 			return store.Job{}, err
 		}
-		boxes := boxesFromMarkups(pg.PageIndex, pg.Markups)
+		boxes := BoxesFromMarkups(pg.PageIndex, pg.Markups)
 		payload := store.AnnotationPayload{JobID: job.ID, PageIndex: pg.PageIndex, Version: 0, Boxes: boxes}
 		revKey := fmt.Sprintf("annotations/%s/p%d/v0.json", job.ID, pg.PageIndex)
 		raw, _ := json.Marshal(payload)
@@ -651,7 +651,8 @@ func (s *Server) persistBluebeamJob(ctx context.Context, u auth.User, projectID,
 	return s.store.GetJob(ctx, job.ID)
 }
 
-func boxesFromMarkups(pageIndex int, markups []geom.Markup) []store.Box {
+// BoxesFromMarkups turns extracted Bluebeam polygons into stored boxes.
+func BoxesFromMarkups(pageIndex int, markups []geom.Markup) []store.Box {
 	out := make([]store.Box, 0, len(markups))
 	for i, m := range markups {
 		pt, px, bPt, bPx := coords.FillBoxPolys(m.PolyPt, nil, [4]float64{}, [4]float64{})
@@ -1287,8 +1288,19 @@ func (s *Server) setJobTags(w http.ResponseWriter, r *http.Request, _ auth.User)
 }
 
 func (s *Server) withAuth(fn func(http.ResponseWriter, *http.Request, auth.User)) http.HandlerFunc {
+	return s.authorize(fn, false)
+}
+
+func (s *Server) withUnloadAuth(fn func(http.ResponseWriter, *http.Request, auth.User)) http.HandlerFunc {
+	return s.authorize(fn, true)
+}
+
+func (s *Server) authorize(fn func(http.ResponseWriter, *http.Request, auth.User), unloadBody bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		u, err := s.auth.FromRequest(r)
+		if err != nil && unloadBody && bearerOf(r) == "" {
+			u, err = s.auth.FromUnloadBody(r)
+		}
 		if err == auth.ErrDomain {
 			http.Error(w, "email domain not allowed", http.StatusForbidden)
 			return
@@ -1311,6 +1323,7 @@ func (s *Server) cors(next http.Handler) http.Handler {
 		}
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Max-Age", "600")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return

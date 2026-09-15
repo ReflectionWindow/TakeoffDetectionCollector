@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -68,7 +69,11 @@ func (s *Service) DevUser() User {
 }
 
 func (s *Service) FromRequest(r *http.Request) (User, error) {
-	raw := bearer(r.Header.Get("Authorization"))
+	return s.FromToken(bearer(r.Header.Get("Authorization")))
+}
+
+func (s *Service) FromToken(raw string) (User, error) {
+	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return User{}, ErrUnauthorized
 	}
@@ -85,6 +90,29 @@ func (s *Service) FromRequest(r *http.Request) (User, error) {
 		return User{}, ErrUnauthorized
 	}
 	return s.parseSupabase(raw)
+}
+
+const unloadTokenMaxBytes = 16 << 10
+
+// FromUnloadBody reads a bearer token from a text/plain body so tab-close
+// can release a claim via sendBeacon without a CORS preflight.
+func (s *Service) FromUnloadBody(r *http.Request) (User, error) {
+	ct := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type")))
+	if i := strings.IndexByte(ct, ';'); i >= 0 {
+		ct = strings.TrimSpace(ct[:i])
+	}
+	if ct != "" && ct != "text/plain" {
+		return User{}, ErrUnauthorized
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, unloadTokenMaxBytes))
+	if err != nil {
+		return User{}, ErrUnauthorized
+	}
+	raw := strings.TrimSpace(string(body))
+	if t := bearer(raw); t != "" {
+		raw = t
+	}
+	return s.FromToken(raw)
 }
 
 // signingKeys returns the JWKS client, lazily built when the config knows the

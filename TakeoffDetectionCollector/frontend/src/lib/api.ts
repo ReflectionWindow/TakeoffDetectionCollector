@@ -177,6 +177,25 @@ export async function releaseJob(id: string): Promise<{ job: Job }> {
   return request(`/v1/jobs/${id}/release`, { method: "POST" });
 }
 
+/** Drop the sheet lock as the tab unloads. sendBeacon avoids a CORS preflight. */
+export function releaseJobOnUnload(id: string, token = getToken()): void {
+  if (!id || !token) return;
+  const url = `${apiBase()}/v1/jobs/${id}/release`;
+  const auth = `Bearer ${token}`;
+  try {
+    if (typeof navigator !== "undefined" && navigator.sendBeacon?.(url, new Blob([auth], { type: "text/plain" }))) {
+      return;
+    }
+  } catch {
+    /* fall through to keepalive fetch */
+  }
+  try {
+    void fetch(url, { method: "POST", headers: { Authorization: auth }, keepalive: true });
+  } catch {
+    /* page is going away */
+  }
+}
+
 export async function claimNext(
   stage: "original" | "corrected" = "original",
   project?: string,

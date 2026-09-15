@@ -864,8 +864,11 @@ code {
   user-select: none;
 }
 .stage.draw-mode { cursor: crosshair; }
-.stage.pan-mode, .stage.pan-mode.draw-mode { cursor: grab; }
+.stage.select-mode { cursor: default; }
+.stage.pan-mode, .stage.pan-mode.draw-mode, .stage.pan-mode.select-mode { cursor: grab; }
 .stage:active { cursor: grabbing; }
+.stage.select-mode:active { cursor: crosshair; }
+.stage.pan-mode:active { cursor: grabbing; }
 .stage-inner {
   position: absolute;
   top: 0;

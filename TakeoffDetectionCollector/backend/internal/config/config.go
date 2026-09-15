@@ -56,7 +56,7 @@ func Load() Config {
 		DBKeepAlive:       DurationEnv("DB_KEEPALIVE", time.Minute),
 
 		IngestWorkers: IntEnv("INGEST_WORKERS", 16),
-		ClaimTTL:      DurationEnv("CLAIM_TTL", 24*time.Hour),
+		ClaimTTL:      DurationEnv("CLAIM_TTL", 5*time.Minute),
 	}
 }
 

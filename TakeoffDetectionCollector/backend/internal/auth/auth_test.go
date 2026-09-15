@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -134,6 +135,30 @@ func TestIssueDevTokenLastsAWeek(t *testing.T) {
 	left := time.Until(time.Unix(c.Exp, 0))
 	if left < 6*24*time.Hour || left > 8*24*time.Hour {
 		t.Fatalf("exp in %v, want ~7d", left)
+	}
+}
+
+func TestFromUnloadBodyAcceptsPlainBearerToken(t *testing.T) {
+	raw := IssueDevToken(User{ID: "1", Email: "dev@reflectionwindow.com", Name: "Dev"})
+	svc := &Service{cfg: stubConfig{domain: "reflectionwindow.com", dev: true}}
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Bearer "+raw))
+	req.Header.Set("Content-Type", "text/plain;charset=UTF-8")
+	got, err := svc.FromUnloadBody(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Email != "dev@reflectionwindow.com" {
+		t.Fatalf("email %q", got.Email)
+	}
+}
+
+func TestFromUnloadBodyRejectsJSON(t *testing.T) {
+	raw := IssueDevToken(User{ID: "1", Email: "dev@reflectionwindow.com", Name: "Dev"})
+	svc := &Service{cfg: stubConfig{domain: "reflectionwindow.com", dev: true}}
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("Bearer "+raw))
+	req.Header.Set("Content-Type", "application/json")
+	if _, err := svc.FromUnloadBody(req); err != ErrUnauthorized {
+		t.Fatalf("got %v", err)
 	}
 }
 

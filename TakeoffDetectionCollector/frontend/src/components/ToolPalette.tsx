@@ -113,7 +113,7 @@ export default function ToolPalette({
       id: "select",
       name: "Select",
       description: geometryLocked && step !== "blackout"
-        ? "Click a shape to select it. Drag a box around several, or Shift-click to add."
+        ? "Click a shape, or drag across several to select a group. Shift-click or ⌘-click adds."
         : step === "blackout"
           ? "Click a blackout to select it, then drag to move or Delete to remove it."
           : "Click a shape to select. Drag to move; handles reshape.",

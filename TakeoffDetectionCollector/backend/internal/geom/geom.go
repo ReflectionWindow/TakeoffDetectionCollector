@@ -90,6 +90,13 @@ var (
 	pageObjRe  = regexp.MustCompile(`/Type\s*/Page[^s]`)
 )
 
+func isPageObject(obj []byte) bool {
+	if bytes.Contains(obj, []byte("/ObjStm")) {
+		return false
+	}
+	return pageObjRe.Match(obj)
+}
+
 type pageBox struct {
 	x0, y0, x1, y1 float64
 }
@@ -185,10 +192,10 @@ func (b pageBox) toViewport(x, y float64, rotate int) (float64, float64) {
 
 func splitPages(pdf []byte) ([]pdfPage, error) {
 	// Prefer explicit page objects; fall back to every stream if none found.
-	objs := splitObjects(pdf)
+	objs := allPDFObjects(pdf)
 	var pages []pdfPage
 	for _, obj := range objs {
-		if !pageObjRe.Match(obj) {
+		if !isPageObject(obj) {
 			continue
 		}
 		w, h := 0.0, 0.0
@@ -245,6 +252,156 @@ func splitObjects(pdf []byte) [][]byte {
 	return out
 }
 
+func allPDFObjects(pdf []byte) [][]byte {
+	objs := splitObjects(pdf)
+	extra := objectsFromPDFObjStms(pdf)
+	if len(extra) == 0 {
+		return objs
+	}
+	return append(objs, extra...)
+}
+
+var (
+	pdfNRe     = regexp.MustCompile(`/N\s+(\d+)`)
+	pdfFirstRe = regexp.MustCompile(`/First\s+(\d+)`)
+	pdfLenRe   = regexp.MustCompile(`/Length\s+(\d+)`)
+)
+
+func pdfDictInt(obj []byte, re *regexp.Regexp) int {
+	m := re.FindSubmatch(obj)
+	if len(m) != 2 {
+		return 0
+	}
+	n, _ := strconv.Atoi(string(m[1]))
+	return n
+}
+
+func streamPayload(obj []byte) []byte {
+	i := bytes.Index(obj, []byte("stream"))
+	if i < 0 {
+		return nil
+	}
+	rest := obj[i+6:]
+	if len(rest) > 0 && rest[0] == '\r' {
+		rest = rest[1:]
+	}
+	if len(rest) > 0 && rest[0] == '\n' {
+		rest = rest[1:]
+	}
+	if n := pdfDictInt(obj, pdfLenRe); n > 0 && n <= len(rest) {
+		return rest[:n]
+	}
+	if j := bytes.Index(rest, []byte("endstream")); j >= 0 {
+		return bytes.TrimRight(rest[:j], "\r\n")
+	}
+	return rest
+}
+
+func lastObjHeaderBefore(pdf []byte, pos int) int {
+	start := 0
+	if pos > 8192 {
+		start = pos - 8192
+	}
+	locs := objHeadRe.FindAllIndex(pdf[start:pos], -1)
+	if len(locs) == 0 {
+		return -1
+	}
+	return start + locs[len(locs)-1][0]
+}
+
+// objectsFromPDFObjStms walks the raw file for /ObjStm dictionaries so page
+// objects survive even when "endobj" appears inside compressed stream bytes.
+func objectsFromPDFObjStms(pdf []byte) [][]byte {
+	var out [][]byte
+	offset := 0
+	for {
+		rel := bytes.Index(pdf[offset:], []byte("/ObjStm"))
+		if rel < 0 {
+			break
+		}
+		abs := offset + rel
+		objStart := lastObjHeaderBefore(pdf, abs)
+		if objStart < 0 {
+			offset = abs + 7
+			continue
+		}
+		streamAt := bytes.Index(pdf[abs:], []byte("stream"))
+		if streamAt < 0 {
+			offset = abs + 7
+			continue
+		}
+		streamAt += abs
+		length := pdfDictInt(pdf[objStart:streamAt], pdfLenRe)
+		end := streamAt + 8 + length + 32
+		if length <= 0 {
+			if es := bytes.Index(pdf[streamAt:], []byte("endstream")); es >= 0 {
+				end = streamAt + es + 9
+			} else {
+				end = len(pdf)
+			}
+		}
+		if end > len(pdf) {
+			end = len(pdf)
+		}
+		out = append(out, objectsFromObjStm(pdf[objStart:end])...)
+		offset = end
+		if offset <= abs {
+			offset = abs + 7
+		}
+	}
+	return out
+}
+
+// objectsFromObjStm unpacks a compressed object stream into synthetic
+// "N 0 obj ... endobj" buffers so page dictionaries stored only in /ObjStm
+// are visible to the rest of the regex parser.
+func objectsFromObjStm(obj []byte) [][]byte {
+	if !bytes.Contains(obj, []byte("/ObjStm")) {
+		return nil
+	}
+	n := pdfDictInt(obj, pdfNRe)
+	first := pdfDictInt(obj, pdfFirstRe)
+	body := inflateMaybe(streamPayload(obj))
+	if n <= 0 || first <= 0 || first > len(body) {
+		return nil
+	}
+	fields := strings.Fields(string(body[:first]))
+	type pair struct{ id, off int }
+	pairs := make([]pair, 0, n)
+	for i := 0; i+1 < len(fields) && len(pairs) < n; i += 2 {
+		id, err1 := strconv.Atoi(fields[i])
+		off, err2 := strconv.Atoi(fields[i+1])
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		pairs = append(pairs, pair{id, off})
+	}
+	out := make([][]byte, 0, len(pairs))
+	for i, p := range pairs {
+		start := first + p.off
+		end := len(body)
+		if i+1 < len(pairs) {
+			end = first + pairs[i+1].off
+		}
+		if start < first || start > len(body) || start > end {
+			continue
+		}
+		if end > len(body) {
+			end = len(body)
+		}
+		chunk := bytes.TrimSpace(body[start:end])
+		if len(chunk) == 0 {
+			continue
+		}
+		wrapped := make([]byte, 0, 16+len(chunk)+8)
+		wrapped = append(wrapped, []byte(strconv.Itoa(p.id)+" 0 obj\n")...)
+		wrapped = append(wrapped, chunk...)
+		wrapped = append(wrapped, []byte("\nendobj")...)
+		out = append(out, wrapped)
+	}
+	return out
+}
+
 func inflateMaybe(raw []byte) []byte {
 	raw = bytes.TrimRight(raw, "\r\n")
 	r, err := zlib.NewReader(bytes.NewReader(raw))
@@ -253,6 +410,9 @@ func inflateMaybe(raw []byte) []byte {
 	}
 	defer r.Close()
 	data, err := io.ReadAll(r)
+	if len(data) > 0 {
+		return data
+	}
 	if err != nil {
 		return raw
 	}

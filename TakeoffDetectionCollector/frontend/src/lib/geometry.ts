@@ -104,6 +104,17 @@ export function boxesInRect<T extends { box_id: string; x1: number; y1: number; 
   return boxes.filter((b) => rectsOverlap(rect, b)).map((b) => b.box_id);
 }
 
+export const MARQUEE_DRAG_PX = 8;
+
+export function isMarqueeGesture(dx: number, dy: number, zoom: number, minScreenPx = MARQUEE_DRAG_PX): boolean {
+  return Math.hypot(dx, dy) * Math.max(zoom, 1e-6) >= minScreenPx;
+}
+
+export function applyMarqueeSelection(baseIds: string[], hitIds: string[], additive: boolean): string[] {
+  if (!additive) return hitIds;
+  return [...new Set([...baseIds, ...hitIds])];
+}
+
 export type PolyPoint = { x: number; y: number };
 
 export function polygonAABB(points: PolyPoint[]): Rect {

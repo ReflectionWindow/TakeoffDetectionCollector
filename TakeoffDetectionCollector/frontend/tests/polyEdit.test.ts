@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyMarqueeSelection,
   boxesInRect,
   edgeMidpoints,
   insertVertex,
+  isMarqueeGesture,
   isRectangle,
   MIN_POLY_POINTS,
   nearestMidpoint,
@@ -110,5 +112,22 @@ describe("rectsOverlap / boxesInRect", () => {
         { x1: 8, y1: 8, x2: 12, y2: 12 },
       ),
     ).toEqual(["a"]);
+  });
+});
+
+describe("marquee selection", () => {
+  it("replaces the selection unless additive", () => {
+    expect(applyMarqueeSelection(["a"], ["b", "c"], false)).toEqual(["b", "c"]);
+    expect(applyMarqueeSelection(["a"], ["b", "c"], true)).toEqual(["a", "b", "c"]);
+  });
+
+  it("keeps original order and drops duplicates when adding", () => {
+    expect(applyMarqueeSelection(["a", "b"], ["b", "c"], true)).toEqual(["a", "b", "c"]);
+  });
+
+  it("commits after a short drag, including a thin swipe", () => {
+    expect(isMarqueeGesture(8, 0, 1)).toBe(true);
+    expect(isMarqueeGesture(4, 0, 1)).toBe(false);
+    expect(isMarqueeGesture(4, 0, 2)).toBe(true);
   });
 });

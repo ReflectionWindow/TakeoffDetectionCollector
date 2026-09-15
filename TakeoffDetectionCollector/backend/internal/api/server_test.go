@@ -10,7 +10,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/StephenLiRWW/TakeoffDetectionCollector/internal/config"
 	"github.com/StephenLiRWW/TakeoffDetectionCollector/internal/storage"
@@ -262,6 +264,9 @@ func TestCORSAllowsVercelWildcard(t *testing.T) {
 	h.ServeHTTP(w, req)
 	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "https://collector-abc123.vercel.app" {
 		t.Fatalf("allow origin %q", got)
+	}
+	if got := w.Header().Get("Access-Control-Max-Age"); got != "600" {
+		t.Fatalf("max age %q", got)
 	}
 
 	req = httptest.NewRequest(http.MethodOptions, "/health", nil)
@@ -642,5 +647,66 @@ func TestImportCocoBlackouts(t *testing.T) {
 	}
 	if len(blk.Regions) != 1 || blk.Regions[0].X1 != 0.1 || blk.Regions[0].Y1 != 0.1 || blk.Regions[0].X2 != 0.3 || blk.Regions[0].Y2 != 0.3 {
 		t.Fatalf("regions %+v", blk.Regions)
+	}
+}
+
+func TestReleaseAcceptsSendBeaconBody(t *testing.T) {
+	cfg := config.Config{
+		CORSOrigins:        []string{"http://localhost:5173"},
+		AllowedEmailDomain: "reflectionwindow.com",
+		DevAuth:            true,
+		ClaimTTL:           time.Minute,
+	}
+	mem := store.NewMemory()
+	job, err := mem.UpsertJob(context.Background(), store.Job{Slug: "sheet", Title: "sheet", Status: store.StatusOriginal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(cfg, mem, storage.NewMemory()).Handler()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/dev", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("dev auth %d %s", w.Code, w.Body.String())
+	}
+	var auth struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&auth); err != nil || auth.Token == "" {
+		t.Fatal(auth)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/v1/jobs/"+job.ID+"/claim", nil)
+	req.Header.Set("Authorization", "Bearer "+auth.Token)
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("claim %d %s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/v1/jobs/"+job.ID+"/release", strings.NewReader("Bearer "+auth.Token))
+	req.Header.Set("Content-Type", "text/plain;charset=UTF-8")
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("beacon release %d %s", w.Code, w.Body.String())
+	}
+	var got struct {
+		Job store.Job `json:"job"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Job.ClaimActive(time.Now().UTC().Add(time.Second)) {
+		t.Fatal("lock should be expired after sendBeacon release")
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/v1/jobs/"+job.ID+"/release", strings.NewReader(`{"token":"`+auth.Token+`"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("json body should not auth, got %d %s", w.Code, w.Body.String())
 	}
 }

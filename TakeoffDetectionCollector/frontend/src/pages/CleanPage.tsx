@@ -24,6 +24,7 @@ import {
   me,
   putBlackouts,
   releaseJob,
+  releaseJobOnUnload,
   revertAnnotations,
   saveAnnotations,
   setJobTags,
@@ -96,7 +97,7 @@ function pageCacheKey(jobId: string, idx: number, w: number, h: number) {
 const STEP_KEYS: Record<Step, string> = {
   blackout: "Scroll to pan · Pinch or ⌃scroll to zoom · Space-drag also pans · Drag a region to move it · Delete removes it · ⌘Z undo · ⇧⌘Z redo",
   boxes: "Select · Draw · Esc clears · ⌘C copy · ⌘V paste · ⌘D duplicate · Alt-drag stamps a copy · Scroll pans · Pinch or ⌃scroll zooms · ⌘Z undo · ⇧⌘Z redo",
-  labels: "Click or drag-select · Shift-click adds · ⌘A all · Pick a class · Scroll pans · Pinch or ⌃scroll zooms · ⌘Z undo",
+  labels: "Drag across shapes to group-select · Shift-click adds · ⌘A all · Pick a class · Scroll pans · Pinch or ⌃scroll zooms · ⌘Z undo",
 };
 
 export default function CleanPage() {
@@ -302,20 +303,10 @@ export default function CleanPage() {
       let revision = ann.revision;
       const source = markupSourceVersion(revs.revisions);
       if (source != null && source !== payload.version) {
-        if (writable) {
-          const restored = await revertAnnotations(jobId, idx, source);
-          if (gen !== loadGenRef.current) return;
-          payload = restored.payload;
-          revision = restored.revision;
-          const latest = await listRevisions(jobId, idx);
-          if (gen !== loadGenRef.current) return;
-          setRevisions(latest.revisions);
-        } else {
-          const restored = await getAnnotations(jobId, idx, source);
-          if (gen !== loadGenRef.current) return;
-          payload = restored.payload;
-          revision = restored.revision;
-        }
+        const restored = await getAnnotations(jobId, idx, source);
+        if (gen !== loadGenRef.current) return;
+        payload = restored.payload;
+        revision = restored.revision;
       }
       const rasterOverlay = shouldRasterOverlay(payload.version, revision.note);
       const nextBoxes =
@@ -391,7 +382,13 @@ export default function CleanPage() {
   useEffect(() => {
     if (!id) return;
     let alive = true;
+    let unloadReleased = false;
     const gen = ++claimGenRef.current;
+    const dropOnUnload = () => {
+      unloadReleased = true;
+      heldRef.current = false;
+      releaseJobOnUnload(id);
+    };
     void (async () => {
       try {
         const who = await me();
@@ -407,6 +404,10 @@ export default function CleanPage() {
           .catch(() => undefined);
         try {
           const claimed = await claimJob(id);
+          if (unloadReleased) {
+            releaseJobOnUnload(id);
+            return;
+          }
           if (!alive || gen !== claimGenRef.current) return;
           heldRef.current = true;
           setJob(claimed.job);
@@ -466,9 +467,32 @@ export default function CleanPage() {
           }
         });
     }, 30_000);
+    const onPageShow = (e: PageTransitionEvent) => {
+      if (!e.persisted || !alive || gen !== claimGenRef.current) return;
+      unloadReleased = false;
+      void claimJob(id)
+        .then((r) => {
+          if (!alive || gen !== claimGenRef.current) return;
+          heldRef.current = true;
+          setJob(r.job);
+          setLockNote(null);
+          setBlocked(null);
+        })
+        .catch((err) => {
+          heldRef.current = false;
+          if (!alive || gen !== claimGenRef.current) return;
+          const who = claimMessage(err);
+          setBlocked(who);
+          if (isSessionError(err) || who === SESSION_EXPIRED_MESSAGE) setError(SESSION_EXPIRED_MESSAGE);
+        });
+    };
+    window.addEventListener("pagehide", dropOnUnload);
+    window.addEventListener("pageshow", onPageShow);
     return () => {
       alive = false;
       window.clearInterval(beat);
+      window.removeEventListener("pagehide", dropOnUnload);
+      window.removeEventListener("pageshow", onPageShow);
       const releasedGen = gen;
       heldRef.current = false;
       window.setTimeout(() => {
@@ -531,7 +555,8 @@ export default function CleanPage() {
 
   function setStep(next: Step) {
     if (next === "blackout") setBoxTool((t) => (t === "pan" ? "pan" : "draw"));
-    if (next === "boxes" || next === "labels") setBoxTool((t) => (t === "pan" ? "pan" : "select"));
+    if (next === "boxes") setBoxTool((t) => (t === "pan" ? "pan" : "select"));
+    if (next === "labels") setBoxTool("select");
     setSelectedIds([]);
     setSelectedBlackoutIndex(null);
     const first = pages[0]?.page_index ?? 0;
@@ -805,10 +830,8 @@ export default function CleanPage() {
         const nxt = nextStep(step);
         if (nxt) setStep(nxt);
       }
-      if (step === "boxes" || step === "blackout") {
-        if (e.key === "s" || e.key === "S") setBoxTool("select");
-        if (e.key === "r" || e.key === "R") setBoxTool("draw");
-      }
+      if (e.key === "s" || e.key === "S") setBoxTool("select");
+      if ((step === "boxes" || step === "blackout") && (e.key === "r" || e.key === "R")) setBoxTool("draw");
       if (e.key === "Delete" || e.key === "Backspace") deleteSelected();
       const n = Number(e.key);
       if (n >= 1 && n <= 9 && CLASSES[n - 1]) reclass(CLASSES[n - 1].name);

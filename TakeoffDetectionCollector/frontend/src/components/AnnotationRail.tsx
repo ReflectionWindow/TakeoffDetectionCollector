@@ -203,7 +203,7 @@ export default function AnnotationRail({
                 </span>
               </div>
             ) : (
-              <div className="selected-info none">Click or drag-select shapes, then pick a class.</div>
+              <div className="selected-info none">Drag to select a group of shapes, then pick a class.</div>
             )}
             <div className="class-grid">
               {CLASSES.map((c) => {
