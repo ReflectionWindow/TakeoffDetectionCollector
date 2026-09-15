@@ -35,8 +35,8 @@ jobs:
       run:
         working-directory: TakeoffDetectionCollector/backend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: TakeoffDetectionCollector/backend/go.mod
           cache-dependency-path: TakeoffDetectionCollector/backend/go.sum
@@ -54,8 +54,8 @@ jobs:
       run:
         working-directory: TakeoffDetectionCollector/frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -80,7 +80,7 @@ jobs:
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Check Vercel secrets
         id: vercel
         run: |
@@ -96,7 +96,7 @@ jobs:
             echo "ok=false" >> "$GITHUB_OUTPUT"
             echo "Skipping Vercel deploy (missing VERCEL_TOKEN / VERCEL_ORG_ID / VERCEL_PROJECT_ID)"
           fi
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         if: steps.vercel.outputs.ok == 'true'
         with:
           node-version: 22
@@ -126,7 +126,7 @@ jobs:
       RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
       RAILWAY_SERVICE_ID: ${{ secrets.RAILWAY_SERVICE_ID }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Check Railway token
         id: railway
         run: |
