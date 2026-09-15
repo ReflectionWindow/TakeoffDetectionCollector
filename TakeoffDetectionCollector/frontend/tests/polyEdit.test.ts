@@ -141,8 +141,7 @@ describe("additive select modifiers", () => {
     expect(isAdditiveSelectEvent({})).toBe(false);
   });
 
-  it("reads Accel/Meta from getModifierState and a held-key fallback", () => {
-    expect(isAdditiveSelectEvent({ getModifierState: (k) => k === "Accel" })).toBe(true);
+  it("reads Meta from getModifierState and a held-key fallback", () => {
     expect(isAdditiveSelectEvent({ getModifierState: (k) => k === "Meta" })).toBe(true);
     expect(isAdditiveSelectEvent({}, true)).toBe(true);
     expect(isAdditiveSelectEvent({ getModifierState: () => false })).toBe(false);

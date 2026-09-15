@@ -264,7 +264,6 @@ export default function CleanPage() {
       wPt: number,
       hPt: number,
       meta: PageMeta | undefined,
-      writable = true,
     ) => {
       const gen = ++loadGenRef.current;
       const key = pageCacheKey(jobId, idx, wPx, hPx);
@@ -432,7 +431,6 @@ export default function CleanPage() {
         let hPx = first.height_px75;
         let wPt = first.width_pt;
         let hPt = first.height_pt;
-        const writable = canEdit(data.job, who.user.id);
         if (data.job.has_pdf) {
           const rendered = await renderSheet(id, first.page_index);
           wPx = rendered.width;
@@ -443,7 +441,7 @@ export default function CleanPage() {
           setSheet(null);
           setSheetPts(null);
         }
-        await loadPage(id, first.page_index, wPx, hPx, wPt, hPt, first, writable);
+        await loadPage(id, first.page_index, wPx, hPx, wPt, hPt, first);
         if (alive) prefetchNeighbors(id, first.page_index, data.job.has_pdf, data.pages);
       } catch (err) {
         setError(isSessionError(err) ? SESSION_EXPIRED_MESSAGE : err instanceof Error ? err.message : String(err));
@@ -549,7 +547,7 @@ export default function CleanPage() {
       wPt = rendered.pageWidthPt;
       hPt = rendered.pageHeightPt;
     }
-    await loadPage(id, next, wPx, hPx, wPt, hPt, meta, canEdit(job, userId));
+    await loadPage(id, next, wPx, hPx, wPt, hPt, meta);
     prefetchNeighbors(id, next, job.has_pdf, pages);
   }
 

@@ -120,12 +120,12 @@ export function isAdditiveSelectEvent(
     shiftKey?: boolean;
     metaKey?: boolean;
     ctrlKey?: boolean;
-    getModifierState?: (key: string) => boolean;
+    getModifierState?: (key: "Meta" | "Control") => boolean;
   },
   accelHeld = false,
 ): boolean {
   if (e.shiftKey || e.metaKey || e.ctrlKey || accelHeld) return true;
-  return Boolean(e.getModifierState?.("Meta") || e.getModifierState?.("Control") || e.getModifierState?.("Accel"));
+  return Boolean(e.getModifierState?.("Meta") || e.getModifierState?.("Control"));
 }
 
 export type PolyPoint = { x: number; y: number };

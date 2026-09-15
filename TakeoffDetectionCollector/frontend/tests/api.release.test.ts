@@ -16,9 +16,7 @@ describe("releaseJobOnUnload", () => {
     releaseJobOnUnload("job-1", "tok-abc");
 
     expect(sendBeacon).toHaveBeenCalledTimes(1);
-    const [url, body] = sendBeacon.mock.calls[0]!;
-    expect(url).toBe("/v1/jobs/job-1/release");
-    expect(body).toBeInstanceOf(Blob);
+    expect(sendBeacon).toHaveBeenCalledWith("/v1/jobs/job-1/release", expect.any(Blob));
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
